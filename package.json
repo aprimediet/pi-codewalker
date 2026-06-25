@@ -1,0 +1,15 @@
+{
+  "name": "@aprimediet/codewalker",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Project intelligence snapshot for the pi coding agent — /learn-this",
+  "keywords": ["pi-package"],
+  "pi": {
+    "extensions": ["./index.ts"],
+    "skills": ["./skills"]
+  },
+  "files": ["*.ts", "skills/**", "README.md"],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}
