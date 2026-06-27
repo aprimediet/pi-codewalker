@@ -1,15 +1,28 @@
 {
   "name": "@aprimediet/codewalker",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "type": "module",
-  "description": "Project intelligence snapshot for the pi coding agent — /learn-this",
+  "description": "Queryable, token-economical project & code index for the pi coding agent.",
   "keywords": ["pi-package"],
   "pi": {
     "extensions": ["./index.ts"],
-    "skills": ["./skills"]
+    "skills": ["./skills"],
+    "prompts": ["./prompts"]
   },
-  "files": ["*.ts", "skills/**", "README.md"],
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "files": ["*.ts", "src/**", "skills/**", "prompts/**", "README.md"],
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*"
-  }
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "dependencies": { "better-sqlite3": "^11.0.0" },
+  "devDependencies": { "vitest": "^1.6.0", "@types/better-sqlite3": "^7.6.0" },
+  "engines": { "node": ">=20" },
+  "publishConfig": { "access": "public" }
 }
