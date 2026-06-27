@@ -30,6 +30,7 @@ export interface ProjectPaths {
   metaFile: string;
   entriesDir: string;
   symbolsDir: string;
+  libsDir: string;
 }
 
 function piHome(): string {
@@ -123,6 +124,7 @@ function pathsForId(id: string, root: string, configDir: string, markerPath: str
     metaFile: path.join(globalDir, "codewalker", "meta.json"),
     entriesDir: path.join(globalDir, "codewalker", "entries"),
     symbolsDir: path.join(globalDir, "codewalker", "entries", "symbols"),
+    libsDir: path.join(globalDir, "codewalker", "entries", "libs"),
   };
 }
 
@@ -164,7 +166,7 @@ export async function ensureProject(cwd: string): Promise<ProjectPaths> {
   const p = resolveProject(cwd);
   const nowISO = new Date().toISOString();
 
-  for (const dir of [p.codewalkerDir, p.entriesDir, p.symbolsDir]) {
+  for (const dir of [p.codewalkerDir, p.entriesDir, p.symbolsDir, p.libsDir]) {
     fs.mkdirSync(dir, { recursive: true });
   }
 

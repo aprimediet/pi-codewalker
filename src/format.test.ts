@@ -2,6 +2,24 @@ import { describe, it, expect } from 'vitest';
 import { formatCompact, formatCardBody } from './format.ts';
 import type { QueryResultRow, StalenessInfo } from './types.ts';
 
+function makeLibRow(overrides: Partial<QueryResultRow> = {}): QueryResultRow {
+  return {
+    id: 100,
+    name: 'createMiddleware',
+    kind: 'function',
+    file_path: 'hono/dist/helper.d.ts',
+    line_start: 0,
+    line_end: 0,
+    signature: 'export declare function createMiddleware<E>(...): MiddlewareHandler',
+    summary: 'Define a typed middleware handler.',
+    score: 0.3,
+    source: 'lib',
+    lib: 'hono',
+    version: '4.6.3',
+    ...overrides,
+  };
+}
+
 function makeRow(overrides: Partial<QueryResultRow> = {}): QueryResultRow {
   return {
     id: 1,
@@ -60,6 +78,40 @@ describe('formatCompact', () => {
     expect(result).toContain('index stale');
     expect(result).toContain('abc123');
     expect(result).toContain('def456');
+  });
+});
+
+describe('formatCompact with lib rows', () => {
+  it('renders a lib row with [lib@version] origin tag', () => {
+    const rows = [makeLibRow()];
+    const result = formatCompact(rows, null);
+    expect(result).toContain('createMiddleware');
+    expect(result).toContain('function');
+    expect(result).toContain('[hono@4.6.3]');
+    expect(result).toContain('Define a typed middleware handler.');
+  });
+
+  it('renders mixed code and lib rows', () => {
+    const libRow = makeLibRow();
+    const codeRow: QueryResultRow = {
+      id: 1, name: 'myFunc', kind: 'function',
+      file_path: 'src/util/helper.ts', line_start: 10, line_end: 20,
+      signature: '(x: number) => string', summary: 'Does something', score: 0.5,
+    };
+    const result = formatCompact([codeRow, libRow], null);
+    expect(result).toContain('helper.ts:10-20');
+    expect(result).toContain('[hono@4.6.3]');
+    // Two lines
+    expect(result.split('\n')).toHaveLength(2);
+  });
+
+  it('bounded output for lib rows (one line per hit)', () => {
+    const rows = Array.from({ length: 5 }, (_, i) =>
+      makeLibRow({ name: `fn${i}`, lib: 'test-pkg', version: '1.0.0' })
+    );
+    const result = formatCompact(rows, null);
+    expect(result.split('\n')).toHaveLength(5);
+    expect(result).toContain('[test-pkg@1.0.0]');
   });
 });
 

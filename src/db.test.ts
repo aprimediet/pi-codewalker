@@ -3,7 +3,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import Database from 'better-sqlite3';
-import { openDb, bootstrapDb, upsertSymbol, searchSymbols, getMeta, setMeta, deleteFileSymbols } from './db.ts';
+import { openDb, bootstrapDb, upsertSymbol, searchSymbols, getMeta, setMeta, deleteFileSymbols, upsertLibrary, upsertLibSymbol, deleteLibrary, searchLibSymbols } from './db.ts';
 
 describe('db.ts', () => {
   let tmpDir: string;
@@ -51,7 +51,41 @@ describe('db.ts', () => {
       const db = new Database(dbPath);
       bootstrapDb(db);
       const version = db.pragma('user_version', { simple: true }) as number;
-      expect(version).toBe(1);
+      expect(version).toBe(2);
+      db.close();
+    });
+
+    it('creates libraries, lib_symbols, and lib_symbols_fts tables', () => {
+      const db = openDb(dbPath);
+      const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[];
+      const tableNames = tables.map(t => t.name);
+      expect(tableNames).toContain('libraries');
+      expect(tableNames).toContain('lib_symbols');
+
+      const ftsTables = db.prepare("SELECT name FROM sqlite_master WHERE name='lib_symbols_fts'").all() as { name: string }[];
+      expect(ftsTables.length).toBe(1);
+      db.close();
+    });
+
+    it('does not destroy existing symbols tables (additive upgrade)', () => {
+      // Bootstrap v1 DB first, then re-bootstrap (simulate upgrade)
+      const db = new Database(dbPath);
+      bootstrapDb(db);
+      upsertSymbol(db, {
+        name: 'keep', kind: 'function', file_path: 'src/a.ts',
+        line_start: 1, line_end: 1, signature: '', doc: '', summary: '', card_path: '',
+      });
+
+      // Call bootstrapDb again (simulates upgrade to v2 adds lib tables)
+      bootstrapDb(db);
+
+      // Symbol still there
+      const symbols = searchSymbols(db, 'keep', undefined, 10);
+      expect(symbols).toHaveLength(1);
+
+      // Lib tables exist
+      const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[];
+      expect(tables.map(t => t.name)).toContain('lib_symbols');
       db.close();
     });
   });
@@ -168,6 +202,118 @@ describe('db.ts', () => {
       const all = searchSymbols(db, '', undefined, 10);
       expect(all).toHaveLength(1);
       expect(all[0]!.name).toBe('keep');
+
+      db.close();
+    });
+  });
+
+  describe('library CRUD', () => {
+    it('upsertLibrary inserts or updates a library record', () => {
+      const db = openDb(dbPath);
+      upsertLibrary(db, { name: 'hono', version: '4.6.3', source: 'node_modules', dts_path: '/a.d.ts', readme: 'Hono web framework' });
+
+      const row = db.prepare("SELECT * FROM libraries WHERE name = ?").get('hono') as any;
+      expect(row).not.toBeUndefined();
+      expect(row.version).toBe('4.6.3');
+      expect(row.source).toBe('node_modules');
+      db.close();
+    });
+
+    it('upsertLibSymbol inserts a lib symbol and it is FTS-searchable', () => {
+      const db = openDb(dbPath);
+      upsertLibSymbol(db, {
+        lib: 'hono', version: '4.6.3', name: 'createMiddleware',
+        kind: 'function', signature: 'export declare function createMiddleware(...)',
+        doc: 'Define a typed middleware handler.', summary: 'Define a typed middleware handler.',
+        card_path: '/cards/hono/createMiddleware.md',
+      });
+
+      const results = searchLibSymbols(db, 'createMiddleware', undefined, 10);
+      expect(results).toHaveLength(1);
+      expect(results[0]!.name).toBe('createMiddleware');
+      expect(results[0]!.lib).toBe('hono');
+      expect(results[0]!.version).toBe('4.6.3');
+      expect(results[0]!.source).toBe('lib');
+
+      db.close();
+    });
+
+    it('searchLibSymbols empty query returns all symbols ordered by name', () => {
+      const db = openDb(dbPath);
+      upsertLibSymbol(db, {
+        lib: 'hono', version: '4.6.3', name: 'zMiddleware',
+        kind: 'function', signature: '', doc: '', summary: '', card_path: '',
+      });
+      upsertLibSymbol(db, {
+        lib: 'hono', version: '4.6.3', name: 'aRouter',
+        kind: 'function', signature: '', doc: '', summary: '', card_path: '',
+      });
+
+      const results = searchLibSymbols(db, '', undefined, 10);
+      expect(results).toHaveLength(2);
+      expect(results[0]!.name).toBe('aRouter');
+      expect(results[1]!.name).toBe('zMiddleware');
+      db.close();
+    });
+
+    it('deleteLibrary removes symbols and FTS rows for all versions of a lib', () => {
+      const db = openDb(dbPath);
+
+      upsertLibSymbol(db, {
+        lib: 'hono', version: '4.6.3', name: 'createMiddleware',
+        kind: 'function', signature: '', doc: '', summary: '', card_path: '',
+      });
+      upsertLibSymbol(db, {
+        lib: 'hono', version: '4.5.0', name: 'oldFunc',
+        kind: 'function', signature: '', doc: '', summary: '', card_path: '',
+      });
+
+      deleteLibrary(db, 'hono');
+
+      const results = searchLibSymbols(db, '', undefined, 10);
+      expect(results).toHaveLength(0);
+
+      const libRow = db.prepare("SELECT * FROM libraries WHERE name = ?").get('hono') as any;
+      expect(libRow).toBeUndefined();
+
+      db.close();
+    });
+
+    it('re-inserting same (lib, name) does not create duplicates', () => {
+      const db = openDb(dbPath);
+
+      upsertLibSymbol(db, {
+        lib: 'hono', version: '4.6.3', name: 'createMiddleware',
+        kind: 'function', signature: 'v1', doc: '', summary: '', card_path: '',
+      });
+      upsertLibSymbol(db, {
+        lib: 'hono', version: '4.6.3', name: 'createMiddleware',
+        kind: 'function', signature: 'v2', doc: '', summary: '', card_path: '',
+      });
+
+      const results = searchLibSymbols(db, 'createMiddleware', undefined, 10);
+      expect(results).toHaveLength(1);
+      // Latest signature
+      expect(results[0]!.signature).toBe('v2');
+
+      db.close();
+    });
+
+    it('kind filter narrows lib symbol results', () => {
+      const db = openDb(dbPath);
+
+      upsertLibSymbol(db, {
+        lib: 'hono', version: '4.6.3', name: 'myFunc',
+        kind: 'function', signature: '', doc: '', summary: '', card_path: '',
+      });
+      upsertLibSymbol(db, {
+        lib: 'hono', version: '4.6.3', name: 'MyType',
+        kind: 'type', signature: '', doc: '', summary: '', card_path: '',
+      });
+
+      const funcs = searchLibSymbols(db, '', 'function', 10);
+      expect(funcs).toHaveLength(1);
+      expect(funcs[0]!.name).toBe('myFunc');
 
       db.close();
     });

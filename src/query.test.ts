@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { openDb, upsertSymbol, setMeta, getMeta, searchSymbols } from './db.ts';
+import { openDb, upsertSymbol, setMeta, getMeta, upsertLibSymbol, searchLibSymbols } from './db.ts';
 import { runQuery } from './query.ts';
 
 describe('query.ts', () => {
@@ -94,5 +94,76 @@ describe('query.ts', () => {
     // The staleness signal depends on git context
     // In a non-git dir, staleness should be null
     expect(result.staleness).toBeNull();
+  });
+
+  // ── source filter ───────────────────────────────────────────
+  it('source="code" returns only code symbols (default)', () => {
+    const db = openDb(dbPath);
+    upsertSymbol(db, {
+      name: 'myFunc', kind: 'function', file_path: 'src/a.ts',
+      line_start: 1, line_end: 1, signature: '', doc: '', summary: '', card_path: '',
+    });
+    upsertLibSymbol(db, {
+      lib: 'hono', version: '4.6.3', name: 'honoFunc',
+      kind: 'function', signature: '', doc: '', summary: '', card_path: '',
+    });
+    db.close();
+
+    const result = runQuery(dbPath, { query: '', source: 'code' });
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0]!.name).toBe('myFunc');
+    expect(result.rows[0]!.source).toBeUndefined();
+  });
+
+  it('source="libs" returns only lib symbols', () => {
+    const db = openDb(dbPath);
+    upsertSymbol(db, {
+      name: 'myFunc', kind: 'function', file_path: 'src/a.ts',
+      line_start: 1, line_end: 1, signature: '', doc: '', summary: '', card_path: '',
+    });
+    upsertLibSymbol(db, {
+      lib: 'hono', version: '4.6.3', name: 'honoFunc',
+      kind: 'function', signature: '', doc: '', summary: '', card_path: '',
+    });
+    db.close();
+
+    const result = runQuery(dbPath, { query: '', source: 'libs' });
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0]!.name).toBe('honoFunc');
+    expect(result.rows[0]!.source).toBe('lib');
+    expect(result.rows[0]!.lib).toBe('hono');
+    expect(result.rows[0]!.version).toBe('4.6.3');
+  });
+
+  it('source="all" returns merged code and lib symbols', () => {
+    const db = openDb(dbPath);
+    upsertSymbol(db, {
+      name: 'myFunc', kind: 'function', file_path: 'src/a.ts',
+      line_start: 1, line_end: 1, signature: '', doc: '', summary: '', card_path: '',
+    });
+    upsertLibSymbol(db, {
+      lib: 'hono', version: '4.6.3', name: 'honoFunc',
+      kind: 'function', signature: '', doc: '', summary: '', card_path: '',
+    });
+    db.close();
+
+    const result = runQuery(dbPath, { query: '', source: 'all' });
+    expect(result.rows).toHaveLength(2);
+  });
+
+  it('source=all respects limit across merged set', () => {
+    const db = openDb(dbPath);
+    upsertSymbol(db, {
+      name: 'aCode', kind: 'function', file_path: 'src/a.ts',
+      line_start: 1, line_end: 1, signature: '', doc: '', summary: '', card_path: '',
+    });
+    upsertLibSymbol(db, {
+      lib: 'pkg', version: '1.0.0', name: 'bLib',
+      kind: 'function', signature: '', doc: '', summary: '', card_path: '',
+    });
+    db.close();
+
+    const result = runQuery(dbPath, { query: '', source: 'all', limit: 1 });
+    expect(result.rows).toHaveLength(1);
   });
 });

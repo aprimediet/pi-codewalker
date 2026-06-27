@@ -4,6 +4,18 @@
  * These types are shared across all layers (extraction, cards, DB, query).
  */
 
+/** Library symbol kind — extends SymbolKind with reexport + namespace. */
+export type LibSymbolKind =
+  | "function"
+  | "const"
+  | "class"
+  | "interface"
+  | "type"
+  | "enum"
+  | "namespace"
+  | "reexport"
+  | "module";
+
 /** The kind of a code symbol. */
 export type SymbolKind =
   | "function"
@@ -16,6 +28,18 @@ export type SymbolKind =
   | "interface"
   | "namespace"
   | "module";
+
+/** A single symbol extracted from a library's .d.ts file. */
+export interface LibSymbol {
+  lib: string;
+  version: string;
+  name: string;
+  kind: LibSymbolKind;
+  signature: string;
+  doc: string;
+  summary: string;
+  card_path: string;
+}
 
 /** A single symbol extracted from source code. */
 export interface Symbol {
@@ -51,6 +75,10 @@ export interface QueryResultRow {
   summary: string;
   score: number;
   id: number;
+  /** Origin fields — code rows omit these; lib rows set them. */
+  source?: "code" | "lib";
+  lib?: string;
+  version?: string;
 }
 
 /** The full result of a query, including staleness info. */

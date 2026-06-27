@@ -58,10 +58,15 @@ describe('index.ts contract', () => {
     expect(queryTool).toBeDefined();
     expect(queryTool!.description).toContain('code index');
 
+    // Check tool has a source parameter
+    const toolParams = (queryTool!.parameters as any);
+    expect(toolParams.properties).toHaveProperty('source');
+
     // Check command registered
     const cmd = stub.commands.find(c => c.name === 'codewalker');
     expect(cmd).toBeDefined();
-    expect(cmd!.description).toBeDefined();
+    expect(cmd!.description).toContain('libs');
+    expect(cmd!.description).toContain('lib');
   });
 
   it('tool.execute returns { content, details } with compact text content', async () => {
@@ -96,5 +101,45 @@ describe('index.ts contract', () => {
     expect(result.content[0]!.type).toBe('text');
 
     fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('tool.execute with source="libs" returns valid result even with no lib data', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-contract-libs-'));
+    const piDir = path.join(tmpDir, '.pi');
+    fs.mkdirSync(piDir, { recursive: true });
+    const markerId = 'test-project-libs-' + Math.random().toString(36).slice(2, 8);
+    fs.writeFileSync(path.join(piDir, markerId + '.md'), `---\npi-project: true\nid: ${markerId}\n---\n`);
+
+    const homePi = path.join(os.homedir(), '.pi', 'projects', markerId, 'codewalker');
+    fs.mkdirSync(homePi, { recursive: true });
+
+    const mod = await import('./index.ts');
+    const stub = createPiStub();
+    mod.default(stub.api as any);
+
+    const tool = stub.tools.find(t => t.name === 'codewalker_query')!;
+    const result = await tool.execute(
+      'test-id',
+      { query: 'test', source: 'libs' },
+      new AbortController().signal,
+      () => {},
+      { cwd: tmpDir },
+    );
+
+    expect(result).toHaveProperty('content');
+    expect(result.content[0]!.text).toContain('No matches');
+    expect(result.details.rows).toEqual([]);
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('command description mentions libs and lib subcommands', async () => {
+    const mod = await import('./index.ts');
+    const stub = createPiStub();
+    mod.default(stub.api as any);
+
+    const cmd = stub.commands.find(c => c.name === 'codewalker')!;
+    expect(cmd.description).toContain('libs [--dev]');
+    expect(cmd.description).toContain('lib <pkg>');
   });
 });

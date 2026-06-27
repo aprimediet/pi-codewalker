@@ -3,13 +3,15 @@
  */
 
 import type { QueryResult, QueryResultRow, StalenessInfo } from "./types.ts";
-import { openDb, searchSymbols, getMeta } from "./db.ts";
+import { openDb, searchSymbols, searchLibSymbols, getMeta } from "./db.ts";
 import { getHeadSha, changedFilesSince } from "./git.ts";
 
 export interface QueryParams {
   query: string;
   kind?: string;
   limit?: number;
+  /** Source scope: "code" (default, only code symbols), "libs" (only lib symbols), or "all" (both). */
+  source?: "code" | "libs" | "all";
 }
 
 /**
@@ -27,12 +29,26 @@ export function runQuery(
   const db = openDb(dbPath);
 
   try {
-    const rows = searchSymbols(
-      db,
-      params.query,
-      params.kind,
-      params.limit ?? 10,
-    );
+    const source = params.source ?? "code";
+    const limit = params.limit ?? 10;
+
+    let rows: QueryResultRow[];
+
+    if (source === "libs") {
+      rows = searchLibSymbols(db, params.query, params.kind, limit) as unknown as QueryResultRow[];
+    } else if (source === "all") {
+      // Run both code and lib searches, merge, sort by score, apply limit
+      const codeRows = searchSymbols(db, params.query, params.kind, limit);
+      const libRows = searchLibSymbols(db, params.query, params.kind, limit) as unknown as QueryResultRow[];
+
+      // Merge and sort by score ascending (lower bm25 = better match)
+      const merged: QueryResultRow[] = [...codeRows, ...libRows];
+      merged.sort((a, b) => a.score - b.score);
+      rows = merged.slice(0, limit);
+    } else {
+      // "code" — default, existing behavior
+      rows = searchSymbols(db, params.query, params.kind, limit);
+    }
 
     const staleness = detectStaleness(db, repoDir);
 

@@ -27,6 +27,12 @@ export function formatCompact(
   }
 
   const lines = rows.map((row) => {
+    if (row.source === "lib" && row.lib && row.version) {
+      const origin = `[${row.lib}@${row.version}]`;
+      const summary = truncate(row.summary || "", SUMMARY_MAX);
+      const loc = row.file_path ? `${basename(row.file_path)}:${row.line_start}-${row.line_end}` : `lib`;
+      return `${row.name} · ${row.kind} · ${origin} · ${loc} · ${summary}`;
+    }
     const loc = `${basename(row.file_path)}:${row.line_start}-${row.line_end}`;
     const summary = truncate(row.summary || "", SUMMARY_MAX);
     return `${row.name} · ${row.kind} · ${loc} · ${summary}`;
