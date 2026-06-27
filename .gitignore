@@ -39,3 +39,5 @@ coverage/
 
 # Pi runtime artifacts (project markers — local to a specific project, never publish)
 .pi/
+
+tmp/
