@@ -64,6 +64,19 @@ export interface CardHead {
   summary: string;
 }
 
+/** Note kind discriminator for bridge cards. */
+export type NoteKind = "glossary" | "decision";
+
+/** A glossary/decision note (bridge card) for conceptual knowledge. */
+export interface Note {
+  note_kind: NoteKind;
+  title: string;
+  body: string;
+  tags: string;
+  related: string;
+  card_path: string;
+}
+
 /** A single row returned from a query. */
 export interface QueryResultRow {
   name: string;
@@ -75,10 +88,13 @@ export interface QueryResultRow {
   summary: string;
   score: number;
   id: number;
-  /** Origin fields — code rows omit these; lib rows set them. */
-  source?: "code" | "lib";
+  /** Origin fields — code rows omit these; lib / note rows set them. */
+  source?: "code" | "lib" | "note";
   lib?: string;
   version?: string;
+  /** Note-specific fields — only for source === "note" rows. */
+  note_kind?: NoteKind;
+  tags?: string;
 }
 
 /** The full result of a query, including staleness info. */

@@ -80,6 +80,14 @@ describe('project.ts', () => {
       expect(p.metaFile).toBe(path.join(p.codewalkerDir, 'meta.json'));
       expect(p.entriesDir).toBe(path.join(p.codewalkerDir, 'entries'));
       expect(p.symbolsDir).toBe(path.join(p.codewalkerDir, 'entries', 'symbols'));
+      expect(p.libsDir).toBe(path.join(p.codewalkerDir, 'entries', 'libs'));
+    });
+
+    it('exposes glossaryDir and decisionsDir paths', async () => {
+      const mod = await import('./project.ts');
+      const p = mod.resolveProject(tmpDir);
+      expect(p.glossaryDir).toBe(path.join(p.codewalkerDir, 'entries', 'glossary'));
+      expect(p.decisionsDir).toBe(path.join(p.codewalkerDir, 'entries', 'decisions'));
     });
   });
 
@@ -89,10 +97,13 @@ describe('project.ts', () => {
       const p = await mod.ensureProject(tmpDir);
       // marker file exists
       expect(fs.existsSync(p.markerPath)).toBe(true);
-      // codewalker dir is created
+      // codewalker dir + subdirs are created
       expect(fs.existsSync(p.codewalkerDir)).toBe(true);
       expect(fs.existsSync(p.entriesDir)).toBe(true);
       expect(fs.existsSync(p.symbolsDir)).toBe(true);
+      expect(fs.existsSync(p.libsDir)).toBe(true);
+      expect(fs.existsSync(p.glossaryDir)).toBe(true);
+      expect(fs.existsSync(p.decisionsDir)).toBe(true);
       // meta.json written
       expect(fs.existsSync(p.metaFile)).toBe(true);
       // meta.json has correct shape

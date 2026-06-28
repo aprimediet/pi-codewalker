@@ -1,43 +1,133 @@
-# Codewalker — Queryable Code Index
+---
+name: codewalker
+description: >
+  Queryable code index + knowledge base for understanding codebases. Finds symbol
+  definitions, function summaries, const/class/type/interface lookups, library API
+  searches, glossary terms, and design decisions — before blindly grepping or reading
+  files. Use FIRST when exploring unfamiliar code.
+---
+
+# Codewalker — Queryable Code Index + Knowledge Base
 
 **Use this skill when:** you need to understand a codebase — find where a symbol is defined,
-understand what a function does, or check if a const/class/type exists — BEFORE editing
-files or grepping through the repo.
+understand what a function does, check if a const/class/type/interface exists, search
+library APIs, look up glossary terms or past design decisions — **before** blindly
+grepping or reading files.
 
-## Workflow
+Codewalker is a token-economical project index that surfaces compact facts instead of
+pulling whole files into your LLM context.
 
-1. **Always query first** before editing unfamiliar code:
-   ```
-   /codewalker query "<symbol-name or concept>"
-   ```
-   This returns compact facts: `name · kind · file:line · one-line summary`.
+---
 
-2. **If the query returns relevant hits**, use `file:line` to read only the span you need
-   instead of grepping the whole repo.
+## Tools (agent-facing)
 
-3. **If the query returns no hits**, the index may be stale or missing. Run:
-   ```
-   /codewalker scan
-   ```
-   (first run) or `/codewalker sync` (incremental update).
+### `codewalker_query` — Search the index
 
-4. **When results include a staleness warning** (`indexed @abc, HEAD @def`), run
-   `/codewalker sync` before trusting the results.
+Use this **first** before reading or grepping files. Returns one-line-per-hit:  
+`name · kind · file:line · one-line-summary`
 
-## Why
+Parameters:
+- `query` — symbol name or concept keywords
+- `kind` — optional filter: `function|const|class|type|method|enum|interface|glossary|decision`
+- `limit` — max hits (default 10)
+- `source` — scope: `code` (default, source symbols), `libs` (library APIs), `notes` (glossary + decisions), `all` (everything)
 
-The index is built out-of-band (mechanical ctags/regex pass) so you never pay the file-scan
-cost inside the LLM context. Queries return compact, ranked facts — tens of tokens instead
-of thousands.
+### `codewalker_enrich` — Write a semantic summary
 
-## Commands
+Call this **after** reading a symbol's source span. Caches a one-line (≤120 char)
+plain-English summary so future queries surface meaning, not just names.
+
+Parameters:
+- `card` — `card_path` of the symbol (from the enrich worklist or query results)
+- `summary` — one-line description of what it does
+
+### `codewalker_note` — Save domain knowledge
+
+Write a glossary term or design decision note. Persists as a markdown card + FTS index
+so future queries find it.
+
+Parameters:
+- `type` — `glossary` | `decision`
+- `title` — glossary term or decision title
+- `body` — definition or rationale
+- `tags` — optional comma-separated tags
+- `related` — optional comma-separated symbol names or `file:line` refs
+
+---
+
+## Commands (human-facing)
 
 | Command | Purpose |
 |---------|---------|
-| `/codewalker scan` | Full (re)build of the code index |
-| `/codewalker sync` | Git-anchored incremental update |
-| `/codewalker query <text>` | Search symbols by name or keyword |
+| `/codewalker scan` | Full (re)build of the code index from scratch |
+| `/codewalker sync` | Git-anchored incremental update (fast) |
+| `/codewalker query <text>` | Search code symbols by name or keyword |
+| `/codewalker enrich <path> [--max=N]` | List unenriched symbols under `path` for annotation |
+| `/codewalker glossary [query]` | Search glossary terms |
+| `/codewalker decisions [query]` | Search decision notes |
+| `/codewalker libs [--dev]` | Index all direct npm dependencies (--dev includes devDeps) |
+| `/codewalker lib <pkg> [query]` | Search a specific library's exported API symbols |
+| `/codewalker help` | Show this help |
 
-## Tool
+---
 
-The model can also call `codewalker_query` directly (same behavior as the command).
+## Workflow
+
+### 1. Before editing unfamiliar code
+```
+/codewalker query "<symbol-name>"
+```
+Or call `codewalker_query` directly from agent conversation.  
+If hits are relevant, use the `file:line` to read only the span you need.
+
+### 2. If the index is stale
+Results include a staleness warning like:  
+`⚠ Index is stale (3 file(s) changed since last index): indexed @abc1234, HEAD @def5678`  
+→ Run `/codewalker sync` first, then query again.
+
+### 3. First time in a project
+```
+/codewalker scan
+```
+This does a full build (ctags primary, regex fallback) and sets up the SQLite+FTS5 database.
+
+### 4. Annotating symbols for future clarity
+After reading a symbol you didn't understand, call `codewalker_enrich` with a summary.  
+This builds up the codebase knowledge map over time.
+
+### 5. Capturing domain knowledge
+When you discover a project-specific concept or learn why a decision was made:
+```
+codewalker_note(type="glossary", title="term", body="definition")
+codewalker_note(type="decision", title="why X", body="rationale")
+```
+These become searchable via `codewalker_query` with `source='notes'` or `source='all'`.
+
+### 6. Exploring library APIs
+```
+/codewalker libs            # index dependencies
+/codewalker lib express     # search express exports
+/codewalker lib lodash get  # search lodash for 'get'
+```
+
+---
+
+## Why
+
+The index is built out-of-band (mechanical ctags/regex pass) so you never pay the
+file-scan cost inside the LLM context. Queries return compact, ranked facts — tens of
+tokens instead of thousands. The note system (glossary + decisions) captures conceptual
+knowledge your future self will thank you for.
+
+---
+
+## Details
+
+- **Staleness detection**: every query result includes git-anchored staleness info
+  comparing the indexed commit against HEAD
+- **FTS5 ranking**: results use bm25 relevance scoring; `code` → `libs` → `notes` order
+  when using `source='all'`
+- **Cards as source of truth**: every symbol and note is stored as a markdown card file.
+  The DB is rebuilt from cards on `scan` — cards are the durable artifact
+- **Source filter**: use `source='libs'` to search only library APIs, `source='notes'`
+  for glossary/decisions, `source='all'` for everything at once

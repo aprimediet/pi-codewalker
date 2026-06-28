@@ -12,7 +12,7 @@
  */
 
 import Database, { type Database as DatabaseType } from "better-sqlite3";
-import type { LibSymbol } from "./types.ts";
+import type { LibSymbol, NoteKind } from "./types.ts";
 
 export { Database };
 export type { DatabaseType };
@@ -28,7 +28,7 @@ export function openDb(dbPath: string): DatabaseType {
 /** Bootstrap DDL — idempotent (all CREATE use IF NOT EXISTS). */
 export function bootstrapDb(db: DatabaseType): void {
   db.exec(`
-    PRAGMA user_version = 2;
+    PRAGMA user_version = 3;
 
     CREATE TABLE IF NOT EXISTS files (
       path        TEXT PRIMARY KEY,
@@ -120,7 +120,57 @@ export function bootstrapDb(db: DatabaseType): void {
       INSERT INTO lib_symbols_fts(rowid, name, signature, doc, summary)
       VALUES (new.id, new.name, new.signature, new.doc, new.summary);
     END;
+
+    -- v1.3: Notes table for glossary/decision bridge cards
+    CREATE TABLE IF NOT EXISTS notes (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      note_kind   TEXT NOT NULL,
+      title       TEXT NOT NULL,
+      body        TEXT,
+      tags        TEXT,
+      related     TEXT,
+      card_path   TEXT,
+      created_at  TEXT
+    );
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
+      title, body, tags,
+      content='notes', content_rowid='id',
+      tokenize='unicode61 remove_diacritics 2'
+    );
+
+    CREATE TRIGGER IF NOT EXISTS notes_ai AFTER INSERT ON notes BEGIN
+      INSERT INTO notes_fts(rowid, title, body, tags)
+      VALUES (new.id, new.title, new.body, new.tags);
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS notes_ad AFTER DELETE ON notes BEGIN
+      INSERT INTO notes_fts(notes_fts, rowid, title, body, tags)
+      VALUES ('delete', old.id, old.title, old.body, old.tags);
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS notes_au AFTER UPDATE ON notes BEGIN
+      INSERT INTO notes_fts(notes_fts, rowid, title, body, tags)
+      VALUES ('delete', old.id, old.title, old.body, old.tags);
+      INSERT INTO notes_fts(rowid, title, body, tags)
+      VALUES (new.id, new.title, new.body, new.tags);
+    END;
   `);
+}
+
+/**
+ * Re-derive the external-content FTS indexes from their content tables (the FTS5 'rebuild'
+ * command). This heals a stale/legacy index: a DB written by an older (pre-trigger, manual-sync)
+ * build can have a `*_fts` shadow that is silently out of sync with its base table. The
+ * `*_ad`/`*_au` triggers issue FTS5 'delete' commands using `old.*` values; if those don't match
+ * the stale index, the delete decrements counts that aren't there and corrupts the index
+ * ("database disk image is malformed"). Running 'rebuild' first makes subsequent trigger-driven
+ * deletes safe. Cheap and idempotent — it only re-tokenizes existing rows (no filesystem work).
+ */
+export function rebuildFtsIndexes(db: DatabaseType): void {
+  db.exec("INSERT INTO symbols_fts(symbols_fts) VALUES('rebuild')");
+  db.exec("INSERT INTO lib_symbols_fts(lib_symbols_fts) VALUES('rebuild')");
+  db.exec("INSERT INTO notes_fts(notes_fts) VALUES('rebuild')");
 }
 
 /** Upsert a file record. */
@@ -221,6 +271,162 @@ export function searchSymbols(
   params.push(limit);
 
   return db.prepare(sql).all(...params) as typeof results;
+}
+
+// ── Notes CRUD ─────────────────────────────────────────────────
+
+/**
+ * Upsert a note keyed on (note_kind, title).
+ * Returns the row id.
+ */
+export function upsertNote(
+  db: DatabaseType,
+  note: { note_kind: string; title: string; body: string; tags: string; related: string; card_path: string },
+): number {
+  const existing = db.prepare(
+    "SELECT id FROM notes WHERE note_kind = ? AND title = ?",
+  ).get(note.note_kind, note.title) as { id: number } | undefined;
+
+  if (existing) {
+    db.prepare(
+      `UPDATE notes SET body=?, tags=?, related=?, card_path=?, created_at=COALESCE(created_at, datetime('now'))
+       WHERE id = ?`,
+    ).run(note.body, note.tags, note.related, note.card_path, existing.id);
+    return existing.id;
+  }
+
+  const result = db.prepare(
+    `INSERT INTO notes (note_kind, title, body, tags, related, card_path, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`,
+  ).run(note.note_kind, note.title, note.body, note.tags, note.related, note.card_path);
+  return Number(result.lastInsertRowid);
+}
+
+/** Delete a note by (note_kind, title). */
+export function deleteNote(db: DatabaseType, noteKind: string, title: string): void {
+  db.prepare("DELETE FROM notes WHERE note_kind = ? AND title = ?").run(noteKind, title);
+}
+
+/**
+ * Search notes via FTS5 MATCH, ranked by bm25.
+ * Empty query returns all notes ordered by title.
+ * Each result is shaped as a QueryResultRow with source:'note'.
+ */
+export function searchNotes(
+  db: DatabaseType,
+  query: string,
+  kindFilter?: NoteKind,
+  limit = 10,
+): Array<{
+  id: number;
+  name: string;
+  kind: string;
+  summary: string;
+  score: number;
+  source: "note";
+  note_kind: NoteKind;
+  tags: string;
+  file_path: string;
+  line_start: number;
+  line_end: number;
+}> {
+  if (!query.trim()) {
+    let sql = "SELECT n.id, n.title as name, n.note_kind as kind, n.body as summary, n.tags, 0.0 as score FROM notes n";
+    const params: unknown[] = [];
+    if (kindFilter) {
+      sql += " WHERE n.note_kind = ?";
+      params.push(kindFilter);
+    }
+    sql += " ORDER BY n.title LIMIT ?";
+    params.push(limit);
+    const rows = db.prepare(sql).all(...params) as any[];
+    return rows.map((r) => ({
+      ...r,
+      source: "note" as const,
+      note_kind: r.kind as NoteKind,
+      file_path: "",
+      line_start: 0,
+      line_end: 0,
+    }));
+  }
+
+  let sql = `
+    SELECT n.id, n.title as name, n.note_kind as kind, n.body as summary, n.tags,
+           bm25(notes_fts, 10.0, 5.0, 3.0) as score
+    FROM notes_fts
+    JOIN notes n ON n.id = notes_fts.rowid
+    WHERE notes_fts MATCH ?
+  `;
+  const params: unknown[] = [query];
+
+  if (kindFilter) {
+    sql += " AND n.note_kind = ?";
+    params.push(kindFilter);
+  }
+
+  sql += " ORDER BY score LIMIT ?";
+  params.push(limit);
+
+  const rows = db.prepare(sql).all(...params) as any[];
+  return rows.map((r) => ({
+    ...r,
+    source: "note" as const,
+    note_kind: r.kind as NoteKind,
+    file_path: "",
+    line_start: 0,
+    line_end: 0,
+  }));
+}
+
+// ── Enrichment helpers ──────────────────────────────────────────
+
+/**
+ * Update symbols.summary for a given card_path.
+ * Returns true if a row was updated, false if no symbol matched.
+ * The existing symbols_au trigger reindexes FTS automatically.
+ */
+export function updateSymbolSummary(
+  db: DatabaseType,
+  cardPath: string,
+  summary: string,
+): boolean {
+  const result = db.prepare(
+    "UPDATE symbols SET summary = ? WHERE card_path = ?",
+  ).run(summary, cardPath);
+  return result.changes > 0;
+}
+
+/**
+ * Select unenriched symbols (summary IS NULL or empty) under a path prefix.
+ * Results ordered by file_path then line_start.
+ */
+export function selectUnenrichedSymbols(
+  db: DatabaseType,
+  pathPrefix: string,
+  limit: number,
+): Array<{
+  name: string;
+  kind: string;
+  file_path: string;
+  line_start: number;
+  line_end: number;
+  card_path: string;
+}> {
+  return db.prepare(
+    `SELECT name, kind, file_path, line_start, line_end, card_path
+     FROM symbols
+     WHERE (summary IS NULL OR summary = '')
+       AND file_path LIKE ?
+     ORDER BY file_path, line_start
+     LIMIT ?`,
+  ).all(pathPrefix + "%", limit) as Array<{
+    name: string;
+    kind: string;
+    file_path: string;
+    line_start: number;
+    line_end: number;
+    card_path: string;
+  }>;
 }
 
 /** Upsert a library record. */

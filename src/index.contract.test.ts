@@ -58,6 +58,26 @@ describe('index.ts contract', () => {
     expect(queryTool).toBeDefined();
     expect(queryTool!.description).toContain('code index');
 
+    // Check new v1.3 tools
+    const enrichTool = stub.tools.find(t => t.name === 'codewalker_enrich');
+    expect(enrichTool).toBeDefined();
+    expect(enrichTool!.description).toContain('summary');
+
+    const noteTool = stub.tools.find(t => t.name === 'codewalker_note');
+    expect(noteTool).toBeDefined();
+    expect(noteTool!.description).toContain('glossary');
+
+    // Check enrich tool parameters
+    const enrichParams = (enrichTool!.parameters as any);
+    expect(enrichParams.properties).toHaveProperty('card');
+    expect(enrichParams.properties).toHaveProperty('summary');
+
+    // Check note tool parameters
+    const noteParams = (noteTool!.parameters as any);
+    expect(noteParams.properties).toHaveProperty('type');
+    expect(noteParams.properties).toHaveProperty('title');
+    expect(noteParams.properties).toHaveProperty('body');
+
     // Check tool has a source parameter
     const toolParams = (queryTool!.parameters as any);
     expect(toolParams.properties).toHaveProperty('source');
@@ -141,5 +161,16 @@ describe('index.ts contract', () => {
     const cmd = stub.commands.find(c => c.name === 'codewalker')!;
     expect(cmd.description).toContain('libs [--dev]');
     expect(cmd.description).toContain('lib <pkg>');
+  });
+
+  it('command description includes enrich, glossary, decisions subcommands', async () => {
+    const mod = await import('./index.ts');
+    const stub = createPiStub();
+    mod.default(stub.api as any);
+
+    const cmd = stub.commands.find(c => c.name === 'codewalker')!;
+    expect(cmd.description).toContain('enrich');
+    expect(cmd.description).toContain('glossary');
+    expect(cmd.description).toContain('decisions');
   });
 });

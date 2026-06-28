@@ -77,6 +77,59 @@ export function parseCard(text: string): { head: CardHead; body: string } | null
 }
 
 /**
+ * Pure: rewrite a card's frontmatter summary: line and upsert a ## What it does body section.
+ * Idempotent — enriching twice yields the same card (replaces the section, doesn't stack duplicates).
+ */
+export function updateCardSummary(cardText: string, summary: string): string {
+  const trimmed = cardText.trim();
+
+  // Split into frontmatter and body
+  const endOfFm = trimmed.indexOf("\n---", 3);
+  if (endOfFm === -1) return cardText; // invalid card, return as-is
+
+  const fmRaw = trimmed.slice(3, endOfFm).trim();
+  const bodyRaw = trimmed.slice(endOfFm + 4).trim();
+
+  // Rebuild frontmatter, replacing summary: line
+  const fmLines = fmRaw.split("\n");
+  const newFmLines: string[] = [];
+  let summaryReplaced = false;
+
+  for (const line of fmLines) {
+    const sep = line.indexOf(":");
+    if (sep > 0) {
+      const key = line.slice(0, sep).trim();
+      if (key === "summary") {
+        newFmLines.push(`summary: ${summary}`);
+        summaryReplaced = true;
+        continue;
+      }
+    }
+    newFmLines.push(line);
+  }
+
+  if (!summaryReplaced) {
+    newFmLines.push(`summary: ${summary}`);
+  }
+
+  const newFrontmatter = `---\n${newFmLines.join("\n")}\n---`;
+
+  // Build body — replace existing ## What it does section if present
+  let body = bodyRaw;
+  const whatItDoesRegex = /## What it does[\s\S]*?(?=\n## |$)/;
+  const whatItDoesSection = `## What it does\n\n${summary}`;
+
+  if (whatItDoesRegex.test(body)) {
+    body = body.replace(whatItDoesRegex, whatItDoesSection);
+  } else {
+    // Append after existing body (or replace empty body)
+    body = body ? `${body}\n\n${whatItDoesSection}` : whatItDoesSection;
+  }
+
+  return `${newFrontmatter}\n\n${body}\n`;
+}
+
+/**
  * Extract only the frontmatter head from a card — the compact, agent-cheap view.
  * Returns null if the card is invalid.
  */

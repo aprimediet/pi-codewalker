@@ -115,6 +115,57 @@ describe('formatCompact with lib rows', () => {
   });
 });
 
+describe('formatCompact with note rows', () => {
+  it('renders a glossary note row with [glossary] prefix', () => {
+    const rows: QueryResultRow[] = [{
+      id: 1, name: 'Idempotency Key', kind: 'glossary',
+      file_path: '', line_start: 0, line_end: 0,
+      signature: '', summary: 'A client-supplied key that makes retries safe.',
+      score: 0.5, source: 'note', note_kind: 'glossary', tags: 'api',
+    }];
+    const result = formatCompact(rows, null);
+    expect(result).toContain('Idempotency Key');
+    expect(result).toContain('glossary');
+    expect(result).toContain('[glossary]');
+    expect(result).toContain('A client-supplied key that makes retries safe.');
+  });
+
+  it('renders a decision note row with [decision] prefix', () => {
+    const rows: QueryResultRow[] = [{
+      id: 1, name: 'Use SQLite', kind: 'decision',
+      file_path: '', line_start: 0, line_end: 0,
+      signature: '', summary: 'Chosen for zero infra.',
+      score: 0.5, source: 'note', note_kind: 'decision', tags: '',
+    }];
+    const result = formatCompact(rows, null);
+    expect(result).toContain('Use SQLite');
+    expect(result).toContain('decision');
+    expect(result).toContain('[decision]');
+  });
+
+  it('renders mixed code + lib + note rows all on separate lines', () => {
+    const codeRow: QueryResultRow = {
+      id: 1, name: 'myFunc', kind: 'function',
+      file_path: 'src/util/helper.ts', line_start: 10, line_end: 20,
+      signature: '', summary: 'Does something', score: 0.5,
+    };
+    const libRow = makeLibRow();
+    const noteRow: QueryResultRow = {
+      id: 1, name: 'Retry Key', kind: 'glossary',
+      file_path: '', line_start: 0, line_end: 0,
+      signature: '', summary: 'Key for idempotent retries.',
+      score: 0.5, source: 'note', note_kind: 'glossary', tags: '',
+    };
+
+    const result = formatCompact([codeRow, libRow, noteRow], null);
+    expect(result).toContain('helper.ts:10-20');
+    expect(result).toContain('[hono@4.6.3]');
+    expect(result).toContain('[glossary]');
+    expect(result).toContain('Retry Key');
+    expect(result.split('\n')).toHaveLength(3);
+  });
+});
+
 describe('formatCardBody', () => {
   it('returns the card body text', () => {
     const body = '# myFunc\n\nDoes something.\n';

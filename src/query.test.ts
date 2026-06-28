@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { openDb, upsertSymbol, setMeta, getMeta, upsertLibSymbol, searchLibSymbols } from './db.ts';
+import { openDb, upsertSymbol, setMeta, getMeta, upsertLibSymbol, upsertNote, searchLibSymbols } from './db.ts';
 import { runQuery } from './query.ts';
 
 describe('query.ts', () => {
@@ -166,4 +166,80 @@ describe('query.ts', () => {
     const result = runQuery(dbPath, { query: '', source: 'all', limit: 1 });
     expect(result.rows).toHaveLength(1);
   });
+
+  // ── notes source ───────────────────────────────────────────
+  it('source="notes" returns only notes', () => {
+    const db = openDb(dbPath);
+    upsertSymbol(db, {
+      name: 'myFunc', kind: 'function', file_path: 'src/a.ts',
+      line_start: 1, line_end: 1, signature: '', doc: '', summary: '', card_path: '',
+    });
+    upsertNote(db, {
+      note_kind: 'glossary', title: 'Glossary Term', body: 'A term', tags: '', related: '', card_path: '',
+    });
+    db.close();
+
+    const result = runQuery(dbPath, { query: '', source: 'notes' });
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0]!.name).toBe('Glossary Term');
+    expect(result.rows[0]!.source).toBe('note');
+  });
+
+  it('source="all" includes notes interleaved with code and libs', () => {
+    const db = openDb(dbPath);
+    upsertSymbol(db, {
+      name: 'myFunc', kind: 'function', file_path: 'src/a.ts',
+      line_start: 1, line_end: 1, signature: '', doc: 'refresh token', summary: '', card_path: '',
+    });
+    upsertLibSymbol(db, {
+      lib: 'hono', version: '4.6.3', name: 'honoFunc',
+      kind: 'function', signature: '', doc: 'refresh token', summary: '', card_path: '',
+    });
+    upsertNote(db, {
+      note_kind: 'glossary', title: 'Refresh Token', body: 'A token used to refresh auth without re-login.', tags: 'auth', related: 'myFunc', card_path: '',
+    });
+    db.close();
+
+    const result = runQuery(dbPath, { query: 'refresh', source: 'all' });
+    expect(result.rows.length).toBeGreaterThanOrEqual(2);
+    // Should have note + lib + code (code rows have source undefined)
+    const sources = result.rows.map(r => r.source);
+    expect(sources).toContain('note');
+    expect(sources).toContain('lib');
+    expect(sources).toContain(undefined); // code rows have no source
+  });
+
+  it('source kind filter works for notes source', () => {
+    const db = openDb(dbPath);
+    upsertNote(db, {
+      note_kind: 'glossary', title: 'Term', body: 'A glossary term', tags: '', related: '', card_path: '',
+    });
+    upsertNote(db, {
+      note_kind: 'decision', title: 'Decision', body: 'A decision note', tags: '', related: '', card_path: '',
+    });
+    db.close();
+
+    const result = runQuery(dbPath, { query: '', source: 'notes', kind: 'glossary' });
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0]!.name).toBe('Term');
+  });
+
+  it('source=all with note in query works (note matches alongside code)', () => {
+    const db = openDb(dbPath);
+    upsertSymbol(db, {
+      name: 'myFunc', kind: 'function', file_path: 'src/payments.ts',
+      line_start: 1, line_end: 10, signature: '', doc: 'processes charges', summary: '', card_path: '',
+    });
+    upsertNote(db, {
+      note_kind: 'glossary', title: 'charge', body: 'A payment processing concept.',
+      tags: 'payments', related: 'myFunc', card_path: '',
+    });
+    db.close();
+
+    const result = runQuery(dbPath, { query: 'charge', source: 'all' });
+    expect(result.rows.length).toBeGreaterThanOrEqual(1);
+    const sources = result.rows.map(r => r.source);
+    expect(sources).toContain('note');
+  });
+
 });

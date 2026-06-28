@@ -27,6 +27,11 @@ export function formatCompact(
   }
 
   const lines = rows.map((row) => {
+    if (row.source === "note" && row.note_kind) {
+      const prefix = `[${row.note_kind}]`;
+      const summary = truncate(row.summary || "", SUMMARY_MAX);
+      return `${row.name} · ${row.note_kind} · ${prefix} · ${summary}`;
+    }
     if (row.source === "lib" && row.lib && row.version) {
       const origin = `[${row.lib}@${row.version}]`;
       const summary = truncate(row.summary || "", SUMMARY_MAX);

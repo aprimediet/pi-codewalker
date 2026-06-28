@@ -8,7 +8,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { openDb, upsertSymbol, deleteFileSymbols, deleteFile, setMeta, getMeta } from "./db.ts";
+import { openDb, upsertSymbol, deleteFileSymbols, deleteFile, setMeta, getMeta, rebuildFtsIndexes } from "./db.ts";
 import { detectCtags, runCtags, runCtagsOnFile } from "./extract/ctags.ts";
 import { parseCtagsOutput } from "./extract/ctags-parse.ts";
 import { extractRegex } from "./extract/regex.ts";
@@ -83,6 +83,11 @@ export async function scan(options: ScanOptions): Promise<void> {
   const db = openDb(dbPath);
 
   try {
+    // Heal any stale/legacy FTS index before the per-row deletes below fire their triggers.
+    // Without this, a DB from an older build can corrupt mid-scan ("database disk image is
+    // malformed"). See rebuildFtsIndexes() for the full rationale.
+    rebuildFtsIndexes(db);
+
     // Start transaction
     db.exec("BEGIN TRANSACTION");
 
@@ -150,6 +155,9 @@ export async function sync(options: ScanOptions): Promise<void> {
   const db = openDb(dbPath);
 
   try {
+    // Heal a stale/legacy FTS index before any trigger-driven deletes (see rebuildFtsIndexes).
+    rebuildFtsIndexes(db);
+
     const lastCommit = getMeta(db, "last_indexed_commit");
     let changedFiles: string[] = [];
 
