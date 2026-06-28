@@ -89,6 +89,13 @@ describe('project.ts', () => {
       expect(p.glossaryDir).toBe(path.join(p.codewalkerDir, 'entries', 'glossary'));
       expect(p.decisionsDir).toBe(path.join(p.codewalkerDir, 'entries', 'decisions'));
     });
+
+    it('exposes analysisDir and conventionsDir paths', async () => {
+      const mod = await import('./project.ts');
+      const p = mod.resolveProject(tmpDir);
+      expect(p.analysisDir).toBe(path.join(p.codewalkerDir, 'entries', 'analysis'));
+      expect(p.conventionsDir).toBe(path.join(p.codewalkerDir, 'entries', 'conventions'));
+    });
   });
 
   describe('ensureProject', () => {
@@ -104,6 +111,8 @@ describe('project.ts', () => {
       expect(fs.existsSync(p.libsDir)).toBe(true);
       expect(fs.existsSync(p.glossaryDir)).toBe(true);
       expect(fs.existsSync(p.decisionsDir)).toBe(true);
+      expect(fs.existsSync(p.analysisDir)).toBe(true);
+      expect(fs.existsSync(p.conventionsDir)).toBe(true);
       // meta.json written
       expect(fs.existsSync(p.metaFile)).toBe(true);
       // meta.json has correct shape

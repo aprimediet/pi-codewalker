@@ -32,6 +32,14 @@ export function formatCompact(
       const summary = truncate(row.summary || "", SUMMARY_MAX);
       return `${row.name} · ${row.note_kind} · ${prefix} · ${summary}`;
     }
+    if (row.source === "analysis") {
+      const kindTag = `[${row.finding_kind || "finding"}]`;
+      const sev = row.severity ? ` · ${row.severity}` : "";
+      const metric = row.metric ? ` · ${row.metric}` : "";
+      const loc = row.file_path ? ` · ${basename(row.file_path)}` : "";
+      const summary = truncate(row.summary || row.name || "", SUMMARY_MAX);
+      return `${row.name}${loc}${sev}${metric} · ${kindTag} · ${summary}`;
+    }
     if (row.source === "lib" && row.lib && row.version) {
       const origin = `[${row.lib}@${row.version}]`;
       const summary = truncate(row.summary || "", SUMMARY_MAX);

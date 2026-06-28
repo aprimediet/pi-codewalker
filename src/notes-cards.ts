@@ -73,7 +73,7 @@ export function parseNoteCard(text: string): {
   }
 
   const noteKind = fm["note_kind"];
-  if (noteKind !== "glossary" && noteKind !== "decision") return null;
+  if (noteKind !== "glossary" && noteKind !== "decision" && noteKind !== "convention") return null;
   if (!fm["title"]) return null;
 
   return {

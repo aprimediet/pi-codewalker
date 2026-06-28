@@ -2,16 +2,16 @@
  * Query orchestration: wraps DB search with staleness detection.
  */
 
-import type { QueryResult, QueryResultRow, StalenessInfo, NoteKind } from "./types.ts";
-import { openDb, searchSymbols, searchLibSymbols, searchNotes, getMeta } from "./db.ts";
+import type { QueryResult, QueryResultRow, StalenessInfo, NoteKind, FindingKind } from "./types.ts";
+import { openDb, searchSymbols, searchLibSymbols, searchNotes, searchFindings, getMeta } from "./db.ts";
 import { getHeadSha, changedFilesSince } from "./git.ts";
 
 export interface QueryParams {
   query: string;
   kind?: string;
   limit?: number;
-  /** Source scope: "code" (default, only code symbols), "libs" (only lib symbols), "notes" (only notes), or "all" (all three). */
-  source?: "code" | "libs" | "notes" | "all";
+  /** Source scope: "code" (default, only code symbols), "libs" (only lib symbols), "notes" (only notes), "analysis" (only findings), or "all" (all four). */
+  source?: "code" | "libs" | "notes" | "analysis" | "all";
 }
 
 /**
@@ -39,14 +39,19 @@ export function runQuery(
     } else if (source === "notes") {
       const noteRows = searchNotes(db, params.query, params.kind as NoteKind | undefined, limit);
       rows = noteRows as unknown as QueryResultRow[];
+    } else if (source === "analysis") {
+      const kindFilter = params.kind && ["coverage", "debt", "practice"].includes(params.kind) ? params.kind : undefined;
+      const analysisRows = searchFindings(db, params.query, kindFilter, limit) as unknown as QueryResultRow[];
+      rows = analysisRows as unknown as QueryResultRow[];
     } else if (source === "all") {
-      // Run code + lib + note searches, merge, sort by score, apply limit
+      // Run code + lib + note + analysis searches, merge, sort by score, apply limit
       const codeRows = searchSymbols(db, params.query, params.kind, limit);
       const libRows = searchLibSymbols(db, params.query, params.kind, limit) as unknown as QueryResultRow[];
       const noteRows = searchNotes(db, params.query, params.kind as NoteKind | undefined, limit * 2) as unknown as QueryResultRow[];
+      const analysisRows = searchFindings(db, params.query, undefined, limit * 2) as unknown as QueryResultRow[];
 
       // Merge and sort by score ascending (lower bm25 = better match)
-      const merged: QueryResultRow[] = [...codeRows, ...libRows, ...noteRows];
+      const merged: QueryResultRow[] = [...codeRows, ...libRows, ...noteRows, ...analysisRows];
       merged.sort((a, b) => a.score - b.score);
       rows = merged.slice(0, limit);
     } else {

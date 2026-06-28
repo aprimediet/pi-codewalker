@@ -17,10 +17,13 @@ import { runQuery } from "./query.ts";
 import { scan, sync } from "./indexer.ts";
 import { indexLibraries } from "./libs/indexer.ts";
 import { formatCompact } from "./format.ts";
-import { openDb, selectUnenrichedSymbols, updateSymbolSummary, searchNotes, upsertNote } from "./db.ts";
+import { openDb, selectUnenrichedSymbols, updateSymbolSummary, searchNotes, upsertNote, upsertFinding, searchFindings, deleteFindingsForFile } from "./db.ts";
 import { updateCardSummary } from "./cards.ts";
 import { addNote } from "./notes.ts";
 import { formatEnrichWorklist, validateEnrichPath, checkEnrichCap } from "./enrich.ts";
+import { runAnalyze, collectSourceFiles } from "./analyze/analyzer.ts";
+import { renderAnalysisCard } from "./analyze/cards.ts";
+import { validateReviewPath, checkReviewCap, selectFilesForReview, formatReviewWorklist } from "./analyze/review.ts";
 import type { NoteKind } from "./types.ts";
 
 export default function codewalkerExtension(pi: ExtensionAPI): void {
@@ -33,7 +36,8 @@ export default function codewalkerExtension(pi: ExtensionAPI): void {
     description:
       "Search the project's code index for symbols (functions, consts, classes, types). " +
       "Returns compact facts (name, kind, file:line, one-line summary) — use this BEFORE grepping/reading files. " +
-      "Optionally search libraries (source='libs') or notes/glossary/decisions (source='notes') or both (source='all').",
+      "Optionally search libraries (source='libs') or notes/glossary/decisions (source='notes') or " +
+      "analysis findings (source='analysis') or all sources (source='all').",
     parameters: Type.Object({
       query: Type.String({ description: "Search text — symbol name or concept keywords." }),
       kind: Type.Optional(Type.String({ description: "Filter: function|const|class|type|method|enum|glossary|decision" })),
@@ -126,18 +130,18 @@ export default function codewalkerExtension(pi: ExtensionAPI): void {
     },
   });
 
-  // -- codewalker_note (v1.3 — write a glossary term or decision)
+  // -- codewalker_note (v1.3 — write a glossary term, decision, or convention)
   pi.registerTool({
     name: "codewalker_note",
     label: "Codewalker Note",
     description:
-      "Write a glossary term or decision note. Persists to a markdown card " +
-      "under entries/{glossary,decisions}/ and the FTS index. Future queries " +
+      "Write a glossary term, decision, or convention note. Persists to a markdown card " +
+      "under entries/{glossary,decisions,conventions}/ and the FTS index. Future queries " +
       "will surface this conceptual knowledge alongside code symbols.",
     parameters: Type.Object({
-      type: Type.String({ description: "glossary | decision" }),
-      title: Type.String({ description: "Glossary term, or decision title." }),
-      body: Type.String({ description: "The definition, or the decision + rationale." }),
+      type: Type.String({ description: "glossary | decision | convention" }),
+      title: Type.String({ description: "Glossary term, decision title, or convention name." }),
+      body: Type.String({ description: "The definition, decision + rationale, or coding convention." }),
       tags: Type.Optional(Type.String({ description: "Comma-separated tags." })),
       related: Type.Optional(Type.String({ description: "Comma-separated symbol names or file:line refs." })),
     }),
@@ -145,15 +149,18 @@ export default function codewalkerExtension(pi: ExtensionAPI): void {
       const p = params as any;
       const type = (p.type as string).toLowerCase();
 
-      if (type !== "glossary" && type !== "decision") {
+      if (type !== "glossary" && type !== "decision" && type !== "convention") {
         return {
-          content: [{ type: "text" as const, text: `Invalid note type "${type}". Must be "glossary" or "decision".` }],
+          content: [{ type: "text" as const, text: `Invalid note type "${type}". Must be "glossary", "decision", or "convention".` }],
           details: { error: "invalid_type" },
         };
       }
 
       const project = await ensureProject(ctx.cwd);
-      const notesDir = type === "glossary" ? project.glossaryDir : project.decisionsDir;
+      let notesDir: string;
+      if (type === "glossary") notesDir = project.glossaryDir;
+      else if (type === "decision") notesDir = project.decisionsDir;
+      else notesDir = project.conventionsDir;
 
       addNote(project.dbPath, {
         note_kind: type as NoteKind,
@@ -164,9 +171,104 @@ export default function codewalkerExtension(pi: ExtensionAPI): void {
         card_path: "",
       }, notesDir);
 
+      const kindLabel = type === "glossary" ? "Glossary term" : type === "decision" ? "Decision" : "Convention";
       return {
-        content: [{ type: "text" as const, text: `${type === "glossary" ? "Glossary term" : "Decision"} "${p.title}" saved and indexed.` }],
+        content: [{ type: "text" as const, text: `${kindLabel} "${p.title}" saved and indexed.` }],
         details: { type, title: p.title },
+      };
+    },
+  });
+
+  // -- codewalker_finding (v1.4 — write an analysis finding)
+  pi.registerTool({
+    name: "codewalker_finding",
+    label: "Codewalker Finding",
+    description:
+      "Write an analysis finding (coverage, debt, or best-practice). " +
+      "Persists to a markdown card under entries/analysis/<kind>/ and the FTS index. " +
+      "Future queries will surface this finding alongside code symbols. " +
+      "Use kind='practice' for agent-driven best-practice findings.",
+    parameters: Type.Object({
+      kind: Type.String({ description: "coverage | debt | practice" }),
+      title: Type.String({ description: "Short finding label." }),
+      file: Type.Optional(Type.String({ description: "File or file:line the finding is about." })),
+      severity: Type.Optional(Type.String({ description: "info | warn | high (default 'info')." })),
+      body: Type.String({ description: "The finding detail + why it matters, grounded in conventions/decisions." }),
+      metric: Type.Optional(Type.String({ description: "Optional metric string, e.g. '42%', 'fn length 180'." })),
+      related: Type.Optional(Type.String({ description: "Comma-separated symbol names or file:line refs." })),
+    }),
+    async execute(_id, params, _signal, _onUpdate, ctx) {
+      const p = params as any;
+      const kind = (p.kind as string).toLowerCase();
+
+      if (!["coverage", "debt", "practice"].includes(kind)) {
+        return {
+          content: [{ type: "text" as const, text: `Invalid kind "${kind}". Must be coverage, debt, or practice.` }],
+          details: { error: "invalid_kind" },
+        };
+      }
+
+      const validSeverities = ["info", "warn", "high"];
+      const severity = (p.severity as string ?? "info").toLowerCase();
+      if (!validSeverities.includes(severity)) {
+        return {
+          content: [{ type: "text" as const, text: `Invalid severity "${severity}". Must be info, warn, or high.` }],
+          details: { error: "invalid_severity" },
+        };
+      }
+
+      // Parse file/file:line into file_path, line_start
+      let filePath = (p.file as string ?? "").trim();
+      let lineStart = 0;
+      const locMatch = filePath.match(/^(.+):(\d+)$/);
+      if (locMatch) {
+        filePath = locMatch[1]!;
+        lineStart = parseInt(locMatch[2]!, 10);
+      }
+
+      const project = await ensureProject(ctx.cwd);
+
+      const finding = {
+        finding_kind: kind as "coverage" | "debt" | "practice",
+        title: (p.title as string).trim(),
+        severity,
+        file_path: filePath,
+        line_start: lineStart,
+        line_end: lineStart, // when only line_start known
+        metric: (p.metric as string) ?? "",
+        body: (p.body as string).trim(),
+        related: (p.related as string ?? "").trim(),
+      };
+
+      // Render and write card
+      const kindDir = path.join(project.analysisDir, kind);
+      if (!fs.existsSync(kindDir)) {
+        fs.mkdirSync(kindDir, { recursive: true });
+      }
+
+      const slug = finding.title
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .slice(0, 80) || "finding";
+      const cardPath = path.join(kindDir, `${slug}.md`);
+      const card = renderAnalysisCard(finding);
+
+      const tmpPath = cardPath + ".tmp";
+      fs.writeFileSync(tmpPath, card, { encoding: "utf-8", mode: 0o600 });
+      fs.renameSync(tmpPath, cardPath);
+
+      // Upsert DB row
+      const db = openDb(project.dbPath);
+      try {
+        upsertFinding(db, { ...finding, card_path: cardPath });
+      } finally {
+        db.close();
+      }
+
+      return {
+        content: [{ type: "text" as const, text: `Finding "${finding.title}" saved.` }],
+        details: { kind, title: finding.title, card_path: cardPath },
       };
     },
   });
@@ -174,11 +276,15 @@ export default function codewalkerExtension(pi: ExtensionAPI): void {
   // ----------------------------------------------------------------- command
   pi.registerCommand("codewalker", {
     description:
-      "codewalker: scan | sync | query <text> | enrich <path> [--max=N] | glossary [query] | decisions [query] | libs [--dev] | lib <pkg> [query] | help\n" +
+      "codewalker: scan | sync | query <text> | enrich <path> [--max=N] | analyze [path] | review <path> [--max=N] | findings [query] [--kind=KIND] | conventions [query] | glossary [query] | decisions [query] | libs [--dev] | lib <pkg> [query] | help\n" +
       "  scan              Full (re)build of the code index\n" +
       "  sync              Git-anchored incremental update\n" +
       "  query <text>      Search the code index (pass source=notes to include glossary/decisions)\n" +
       "  enrich <path>     Select unenriched symbols under <path> and write summaries\n" +
+      "  analyze [path]    Mechanical coverage + debt analysis (reads lcov.info/coverage-final.json if present)\n" +
+      "  review <path>     Agent-driven best-practice review against conventions/decisions (capped at 25 files)\n" +
+      "  findings [query]  Search analysis findings (--kind=coverage|debt|practice to filter)\n" +
+      "  conventions [q]   Search coding conventions\n" +
       "  glossary [query]  Search glossary terms\n" +
       "  decisions [query] Search decision notes\n" +
       "  libs [--dev]      Index all direct dependencies (--dev includes devDependencies)\n" +
@@ -355,13 +461,120 @@ export default function codewalkerExtension(pi: ExtensionAPI): void {
             break;
           }
 
+          // ── v1.4: analyze ──────────────────────────────────
+          case "analyze": {
+            const analyzePath = tokens[1] ?? project.root;
+            notify(`Running analysis${analyzePath !== project.root ? ` on ${analyzePath}` : ""}…`);
+            const result = runAnalyze({
+              projectRoot: project.root,
+              analysisDir: project.analysisDir,
+              dbPath: project.dbPath,
+              pathFilter: analyzePath !== project.root ? analyzePath : undefined,
+            });
+            const parts: string[] = [];
+            if (result.coverage > 0) parts.push(`${result.coverage} coverage`);
+            else parts.push("no coverage data (run your coverage tool first)");
+            if (result.debt > 0) parts.push(`${result.debt} debt`);
+            else parts.push("no debt");
+            notify(`Analysis complete: ${parts.join(", ")} finding(s).`);
+            break;
+          }
+
+          // ── v1.4: review ───────────────────────────────────
+          case "review": {
+            const reviewPath = tokens[1];
+            const pathCheck = validateReviewPath(reviewPath);
+            if (!pathCheck.valid) {
+              notify(pathCheck.error!, "error");
+              return;
+            }
+
+            // Parse optional --max=N
+            const maxToken = tokens.find(t => t.startsWith("--max="));
+            const cap = maxToken ? parseInt(maxToken.slice(6), 10) : 25;
+
+            // Walk source files under the review path
+            const allFiles = collectSourceFiles(project.root, reviewPath);
+
+            // Cap check
+            const capCheck = checkReviewCap(allFiles.length, cap);
+            if (!capCheck.ok) {
+              notify(capCheck.error!, "error");
+              return;
+            }
+
+            // Select files (respect cap)
+            const selectedFiles = selectFilesForReview(allFiles, reviewPath!, cap);
+
+            if (selectedFiles.length === 0) {
+              notify(`No source files found under "${reviewPath}".`);
+              return;
+            }
+
+            // Format the worklist
+            const worklist = formatReviewWorklist(selectedFiles, reviewPath!);
+
+            // With UI, drive the agent; without UI, print the worklist
+            if ((ctx as any).hasUI) {
+              notify(worklist);
+              try {
+                (ctx as any).sendUserMessage?.(worklist);
+              } catch {
+                // sendUserMessage may not be available in all contexts
+              }
+            } else {
+              console.log(worklist);
+            }
+            break;
+          }
+
+          // ── v1.4: findings ─────────────────────────────────
+          case "findings": {
+            const q = tokens.slice(1).join(" ");
+            // Parse optional --kind=
+            const kindToken = tokens.find(t => t.startsWith("--kind="));
+            const kindFilter = kindToken ? kindToken.slice(7) : undefined;
+            // Strip --kind from the query
+            const cleanQuery = tokens.filter(t => !t.startsWith("--")).slice(1).join(" ");
+
+            const db = openDb(project.dbPath);
+            let rows;
+            try {
+              rows = searchFindings(db, cleanQuery, kindFilter, 20);
+            } finally {
+              db.close();
+            }
+            const text = formatCompact(rows as any, null);
+            notify(text || "No findings found.");
+            break;
+          }
+
+          // ── v1.4: conventions ──────────────────────────────
+          case "conventions": {
+            const q = tokens.slice(1).join(" ");
+            const db = openDb(project.dbPath);
+            let rows;
+            try {
+              rows = searchNotes(db, q || "", "convention", 20);
+            } finally {
+              db.close();
+            }
+            const text = formatCompact(rows as any, null);
+            notify(text || "No conventions found.");
+            break;
+          }
+
           default: {
             notify(
-              "codewalker: scan | sync | query <text> | enrich <path> [--max=N] | glossary [query] | decisions [query] | libs [--dev] | lib <pkg> [query] | help\n" +
+              "codewalker: scan | sync | query <text> | enrich <path> [--max=N] | analyze [path] | review <path> [--max=N] | findings [query] [--kind=KIND] | conventions [query] | glossary [query] | decisions [query] | libs [--dev] | lib <pkg> [query] | help\n" +
               "  scan              Full (re)build of the code index\n" +
               "  sync              Git-anchored incremental update\n" +
               "  query <text>      Search the code index (pass source=notes to include glossary/decisions)\n" +
               "  enrich <path>     Select unenriched symbols under <path> and write summaries\n" +
+              "  analyze [path]    Mechanical coverage + debt analysis (reads lcov.info/coverage-final.json if present)\n" +
+              "  review <path>     Agent-driven best-practice review against conventions/decisions (capped at 25 files)\n" +
+              "  findings [query]  Search analysis findings (--kind=coverage|debt|practice to filter)\n" +
+              "  conventions [q]   Search coding conventions\n" +
               "  glossary [query]  Search glossary terms\n" +
               "  decisions [query] Search decision notes\n" +
               "  libs [--dev]      Index all direct dependencies (--dev includes devDependencies)\n" +

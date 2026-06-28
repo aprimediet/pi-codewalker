@@ -3,7 +3,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import Database from 'better-sqlite3';
-import { openDb, bootstrapDb, upsertSymbol, searchSymbols, getMeta, setMeta, deleteFileSymbols, upsertLibrary, upsertLibSymbol, deleteLibrary, searchLibSymbols, upsertNote, searchNotes, deleteNote, updateSymbolSummary, selectUnenrichedSymbols } from './db.ts';
+import { openDb, bootstrapDb, upsertSymbol, searchSymbols, getMeta, setMeta, deleteFileSymbols, upsertLibrary, upsertLibSymbol, deleteLibrary, searchLibSymbols, upsertNote, searchNotes, deleteNote, updateSymbolSummary, selectUnenrichedSymbols, upsertFinding, deleteFindingsForFile, searchFindings } from './db.ts';
 
 describe('db.ts', () => {
   let tmpDir: string;
@@ -47,11 +47,11 @@ describe('db.ts', () => {
       // No error = idempotent
     });
 
-    it('sets user_version to 3 (v1.3 schema)', () => {
+    it('sets user_version to 4 (v1.4 schema)', () => {
       const db = new Database(dbPath);
       bootstrapDb(db);
       const version = db.pragma('user_version', { simple: true }) as number;
-      expect(version).toBe(3);
+      expect(version).toBe(4);
       db.close();
     });
 
@@ -89,6 +89,19 @@ describe('db.ts', () => {
 
       const ftsTables = db.prepare("SELECT name FROM sqlite_master WHERE name='notes_fts'").all() as { name: string }[];
       expect(ftsTables.length).toBe(1);
+
+      // Analysis tables exist (v1.4 additive upgrade)
+      expect(tables.map(t => t.name)).toContain('analysis');
+      const analysisFts = db.prepare("SELECT name FROM sqlite_master WHERE name='analysis_fts'").all() as { name: string }[];
+      expect(analysisFts.length).toBe(1);
+
+      // Analysis triggers exist
+      const triggers = db.prepare("SELECT name FROM sqlite_master WHERE type='trigger'").all() as { name: string }[];
+      const triggerNames = triggers.map(t => t.name);
+      expect(triggerNames).toContain('analysis_ai');
+      expect(triggerNames).toContain('analysis_ad');
+      expect(triggerNames).toContain('analysis_au');
+
       db.close();
     });
   });
@@ -570,6 +583,213 @@ describe('db.ts', () => {
       expect(results[0]!.line_start).toBe(10);
       expect(results[0]!.line_end).toBe(20);
       expect(results[0]!.card_path).toBe('/cards/test.md');
+
+      db.close();
+    });
+  });
+
+  describe('analysis CRUD + FTS via triggers', () => {
+    it('creates analysis + analysis_fts tables on bootstrap', () => {
+      const db = openDb(dbPath);
+      const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[];
+      expect(tables.map(t => t.name)).toContain('analysis');
+
+      const ftsTables = db.prepare("SELECT name FROM sqlite_master WHERE name='analysis_fts'").all() as { name: string }[];
+      expect(ftsTables.length).toBe(1);
+
+      const triggers = db.prepare("SELECT name FROM sqlite_master WHERE type='trigger'").all() as { name: string }[];
+      const triggerNames = triggers.map(t => t.name);
+      expect(triggerNames).toContain('analysis_ai');
+      expect(triggerNames).toContain('analysis_ad');
+      expect(triggerNames).toContain('analysis_au');
+      db.close();
+    });
+
+    it('upsertFinding inserts a finding and FTS MATCH finds it', () => {
+      const db = openDb(dbPath);
+
+      const id = upsertFinding(db, {
+        finding_kind: 'coverage',
+        title: 'Low coverage: src/auth/token.ts',
+        severity: 'warn',
+        file_path: 'src/auth/token.ts',
+        line_start: 0,
+        line_end: 0,
+        metric: '38% (24/63 lines)',
+        body: 'Auth token refresh path is under-tested — 38% line coverage.',
+        related: 'refreshToken, token.ts:42-71',
+        card_path: '/entries/analysis/coverage/low-coverage-src-auth-token.md',
+      });
+
+      expect(typeof id).toBe('number');
+      expect(id).toBeGreaterThan(0);
+
+      // FTS search
+      const results = searchFindings(db, 'coverage');
+      expect(results).toHaveLength(1);
+      expect(results[0]!.name).toBe('Low coverage: src/auth/token.ts');
+      expect(results[0]!.finding_kind).toBe('coverage');
+      expect(results[0]!.severity).toBe('warn');
+      expect(results[0]!.source).toBe('analysis');
+
+      db.close();
+    });
+
+    it('upsertFinding upserts on (finding_kind, file_path, title) — update refreshes FTS via analysis_au', () => {
+      const db = openDb(dbPath);
+
+      upsertFinding(db, {
+        finding_kind: 'coverage',
+        title: 'Low coverage: token.ts',
+        severity: 'warn',
+        file_path: 'src/auth/token.ts',
+        line_start: 0, line_end: 0,
+        metric: '38%',
+        body: 'Old description',
+        related: '',
+        card_path: '/cards/coverage-token.md',
+      });
+
+      // Update
+      upsertFinding(db, {
+        finding_kind: 'coverage',
+        title: 'Low coverage: token.ts',
+        severity: 'high',
+        file_path: 'src/auth/token.ts',
+        line_start: 0, line_end: 0,
+        metric: '25%',
+        body: 'Worse now with uniqueTermFindABC',
+        related: '',
+        card_path: '/cards/coverage-token.md',
+      });
+
+      // Search for new text (proves analysis_au fired)
+      const results = searchFindings(db, 'uniqueTermFindABC');
+      expect(results).toHaveLength(1);
+      expect(results[0]!.metric).toBe('25%');
+
+      // No duplicate
+      const all = searchFindings(db, '');
+      expect(all).toHaveLength(1);
+
+      db.close();
+    });
+
+    it('deleteFindingsForFile removes findings and FTS rows for a file', () => {
+      const db = openDb(dbPath);
+
+      upsertFinding(db, {
+        finding_kind: 'debt', title: 'TODO: fix me', severity: 'info',
+        file_path: 'src/a.ts', line_start: 5, line_end: 5,
+        metric: 'TODO', body: 'FixThisUniqueXYZ123', related: '',
+        card_path: '/cards/debt-a.md',
+      });
+      upsertFinding(db, {
+        finding_kind: 'debt', title: 'HACK: workaround', severity: 'high',
+        file_path: 'src/b.ts', line_start: 10, line_end: 10,
+        metric: 'HACK', body: 'Ugly workaround', related: '',
+        card_path: '/cards/debt-b.md',
+      });
+
+      deleteFindingsForFile(db, 'debt', 'src/a.ts');
+
+      const all = searchFindings(db, '');
+      expect(all).toHaveLength(1);
+      expect(all[0]!.name).toBe('HACK: workaround');
+
+      // FTS should be clean too — no result for the deleted finding's unique text
+      const ftsResults = searchFindings(db, 'FixThisUniqueXYZ123');
+      expect(ftsResults).toHaveLength(0);
+
+      db.close();
+    });
+
+    it('searchFindings empty query returns all findings ordered by severity, title', () => {
+      const db = openDb(dbPath);
+
+      upsertFinding(db, {
+        finding_kind: 'debt', title: 'Alpha debt', severity: 'info',
+        file_path: 'src/a.ts', line_start: 0, line_end: 0,
+        metric: 'TODO', body: '', related: '', card_path: '',
+      });
+      upsertFinding(db, {
+        finding_kind: 'coverage', title: 'Zebra coverage', severity: 'high',
+        file_path: 'src/b.ts', line_start: 0, line_end: 0,
+        metric: '10%', body: '', related: '', card_path: '',
+      });
+
+      const results = searchFindings(db, '');
+      expect(results.length).toBeGreaterThanOrEqual(2);
+
+      db.close();
+    });
+
+    it('searchFindings with kindFilter narrows by finding_kind', () => {
+      const db = openDb(dbPath);
+
+      upsertFinding(db, {
+        finding_kind: 'coverage', title: 'Coverage gap', severity: 'warn',
+        file_path: 'src/a.ts', line_start: 0, line_end: 0,
+        metric: '50%', body: '', related: '', card_path: '',
+      });
+      upsertFinding(db, {
+        finding_kind: 'debt', title: 'Debt item', severity: 'high',
+        file_path: 'src/b.ts', line_start: 0, line_end: 0,
+        metric: 'TODO', body: '', related: '', card_path: '',
+      });
+
+      const coverageResults = searchFindings(db, '', 'coverage');
+      expect(coverageResults).toHaveLength(1);
+      expect(coverageResults[0]!.finding_kind).toBe('coverage');
+
+      db.close();
+    });
+
+    it('searchFindings with query returns bm25-ranked results', () => {
+      const db = openDb(dbPath);
+
+      upsertFinding(db, {
+        finding_kind: 'debt', title: 'General', severity: 'info',
+        file_path: 'src/a.ts', line_start: 0, line_end: 0,
+        metric: 'TODO', body: 'Some text about authentication token refresh', related: '', card_path: '',
+      });
+      upsertFinding(db, {
+        finding_kind: 'debt', title: 'Token issue', severity: 'high',
+        file_path: 'src/b.ts', line_start: 0, line_end: 0,
+        metric: 'FIXME', body: 'Token validation is weak', related: '', card_path: '',
+      });
+
+      const results = searchFindings(db, 'token');
+      expect(results).toHaveLength(2);
+
+      db.close();
+    });
+  });
+
+  describe('convention notes', () => {
+    it('upsertNote accepts convention note_kind and it is searchable', () => {
+      const db = openDb(dbPath);
+
+      const id = upsertNote(db, {
+        note_kind: 'convention',
+        title: 'Use functional components',
+        body: 'All React components must be pure functions, not classes.',
+        tags: 'react,style',
+        related: 'Component, renderFunction',
+        card_path: '/entries/conventions/use-functional-components.md',
+      });
+
+      expect(id).toBeGreaterThan(0);
+
+      // Search by note_kind
+      const results = searchNotes(db, '', 'convention');
+      expect(results).toHaveLength(1);
+      expect(results[0]!.name).toBe('Use functional components');
+      expect(results[0]!.note_kind).toBe('convention');
+
+      // FTS search
+      const ftsResults = searchNotes(db, 'functional');
+      expect(ftsResults).toHaveLength(1);
 
       db.close();
     });

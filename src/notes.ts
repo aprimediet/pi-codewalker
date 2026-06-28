@@ -64,6 +64,7 @@ export function rebuildNotesDbFromCards(
   dbPath: string,
   glossaryDir: string,
   decisionsDir: string,
+  conventionsDir?: string,
 ): void {
   const db = openDb(dbPath);
 
@@ -81,6 +82,11 @@ export function rebuildNotesDbFromCards(
     // Process decisions cards
     if (fs.existsSync(decisionsDir)) {
       processCardsInDir(db, decisionsDir, "decision");
+    }
+
+    // Process conventions cards (v1.4)
+    if (conventionsDir && fs.existsSync(conventionsDir)) {
+      processCardsInDir(db, conventionsDir, "convention");
     }
 
     db.exec("COMMIT");

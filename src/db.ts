@@ -28,7 +28,7 @@ export function openDb(dbPath: string): DatabaseType {
 /** Bootstrap DDL — idempotent (all CREATE use IF NOT EXISTS). */
 export function bootstrapDb(db: DatabaseType): void {
   db.exec(`
-    PRAGMA user_version = 3;
+    PRAGMA user_version = 4;
 
     CREATE TABLE IF NOT EXISTS files (
       path        TEXT PRIMARY KEY,
@@ -155,6 +155,45 @@ export function bootstrapDb(db: DatabaseType): void {
       INSERT INTO notes_fts(rowid, title, body, tags)
       VALUES (new.id, new.title, new.body, new.tags);
     END;
+
+    -- v1.4: Analysis table for coverage/debt/practice findings
+    CREATE TABLE IF NOT EXISTS analysis (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      finding_kind  TEXT NOT NULL,
+      title         TEXT NOT NULL,
+      severity      TEXT,
+      file_path     TEXT,
+      line_start    INTEGER,
+      line_end      INTEGER,
+      metric        TEXT,
+      body          TEXT,
+      related       TEXT,
+      card_path     TEXT,
+      created_at    TEXT
+    );
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS analysis_fts USING fts5(
+      title, body, metric,
+      content='analysis', content_rowid='id',
+      tokenize='unicode61 remove_diacritics 2'
+    );
+
+    CREATE TRIGGER IF NOT EXISTS analysis_ai AFTER INSERT ON analysis BEGIN
+      INSERT INTO analysis_fts(rowid, title, body, metric)
+      VALUES (new.id, new.title, new.body, new.metric);
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS analysis_ad AFTER DELETE ON analysis BEGIN
+      INSERT INTO analysis_fts(analysis_fts, rowid, title, body, metric)
+      VALUES ('delete', old.id, old.title, old.body, old.metric);
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS analysis_au AFTER UPDATE ON analysis BEGIN
+      INSERT INTO analysis_fts(analysis_fts, rowid, title, body, metric)
+      VALUES ('delete', old.id, old.title, old.body, old.metric);
+      INSERT INTO analysis_fts(rowid, title, body, metric)
+      VALUES (new.id, new.title, new.body, new.metric);
+    END;
   `);
 }
 
@@ -171,6 +210,7 @@ export function rebuildFtsIndexes(db: DatabaseType): void {
   db.exec("INSERT INTO symbols_fts(symbols_fts) VALUES('rebuild')");
   db.exec("INSERT INTO lib_symbols_fts(lib_symbols_fts) VALUES('rebuild')");
   db.exec("INSERT INTO notes_fts(notes_fts) VALUES('rebuild')");
+  db.exec("INSERT INTO analysis_fts(analysis_fts) VALUES('rebuild')");
 }
 
 /** Upsert a file record. */
@@ -375,6 +415,156 @@ export function searchNotes(
     file_path: "",
     line_start: 0,
     line_end: 0,
+  }));
+}
+
+// ── Analysis CRUD ────────────────────────────────────────────
+
+/**
+ * Allowed finding kinds.
+ */
+const VALID_FINDING_KINDS = new Set(["coverage", "debt", "practice"]);
+
+/**
+ * Upsert a finding keyed on (finding_kind, file_path, title).
+ * Returns the row id.
+ */
+export function upsertFinding(
+  db: DatabaseType,
+  finding: {
+    finding_kind: string;
+    title: string;
+    severity?: string;
+    file_path?: string;
+    line_start?: number;
+    line_end?: number;
+    metric?: string;
+    body?: string;
+    related?: string;
+    card_path?: string;
+  },
+): number {
+  if (!VALID_FINDING_KINDS.has(finding.finding_kind)) {
+    throw new Error(`Invalid finding_kind "${finding.finding_kind}". Must be coverage, debt, or practice.`);
+  }
+
+  const existing = db.prepare(
+    "SELECT id FROM analysis WHERE finding_kind = ? AND file_path = ? AND title = ?",
+  ).get(finding.finding_kind, finding.file_path ?? "", finding.title) as { id: number } | undefined;
+
+  if (existing) {
+    db.prepare(
+      `UPDATE analysis SET severity=?, line_start=?, line_end=?, metric=?, body=?, related=?, card_path=?, created_at=COALESCE(created_at, datetime('now'))
+       WHERE id = ?`,
+    ).run(
+      finding.severity ?? null, finding.line_start ?? null, finding.line_end ?? null,
+      finding.metric ?? null, finding.body ?? null, finding.related ?? null,
+      finding.card_path ?? null, existing.id,
+    );
+    return existing.id;
+  }
+
+  const result = db.prepare(
+    `INSERT INTO analysis (finding_kind, title, severity, file_path, line_start, line_end, metric, body, related, card_path, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+  ).run(
+    finding.finding_kind, finding.title, finding.severity ?? null, finding.file_path ?? "",
+    finding.line_start ?? null, finding.line_end ?? null, finding.metric ?? null,
+    finding.body ?? null, finding.related ?? null, finding.card_path ?? null,
+  );
+  return Number(result.lastInsertRowid);
+}
+
+/**
+ * Delete all findings for a given file of a given kind.
+ * The analysis_ad trigger removes the FTS rows.
+ */
+export function deleteFindingsForFile(
+  db: DatabaseType,
+  findingKind: string,
+  filePath: string,
+): void {
+  db.prepare("DELETE FROM analysis WHERE finding_kind = ? AND file_path = ?").run(findingKind, filePath);
+}
+
+/**
+ * Search findings via FTS5 MATCH, ranked by bm25.
+ * Empty query returns all findings ordered by severity, title.
+ * Each result is shaped as a QueryResultRow with source:'analysis'.
+ */
+export function searchFindings(
+  db: DatabaseType,
+  query: string,
+  kindFilter?: string,
+  limit = 10,
+): Array<{
+  id: number;
+  name: string;
+  kind: string;
+  summary: string;
+  score: number;
+  source: "analysis";
+  finding_kind: string;
+  severity: string | null;
+  metric: string | null;
+  file_path: string;
+  line_start: number;
+  line_end: number;
+}> {
+  if (!query.trim()) {
+    let sql = `
+      SELECT a.id, a.title as name, a.finding_kind as kind, a.body as summary,
+             a.severity, a.metric, a.file_path, a.line_start, a.line_end, 0.0 as score
+      FROM analysis a
+    `;
+    const params: unknown[] = [];
+    if (kindFilter) {
+      sql += " WHERE a.finding_kind = ?";
+      params.push(kindFilter);
+    }
+    sql += " ORDER BY CASE a.severity WHEN 'high' THEN 1 WHEN 'warn' THEN 2 WHEN 'info' THEN 3 ELSE 4 END, a.title LIMIT ?";
+    params.push(limit);
+    const rows = db.prepare(sql).all(...params) as any[];
+    return rows.map((r) => ({
+      ...r,
+      source: "analysis" as const,
+      finding_kind: r.kind as string,
+      file_path: r.file_path ?? "",
+      line_start: r.line_start ?? 0,
+      line_end: r.line_end ?? 0,
+      severity: r.severity ?? null,
+      metric: r.metric ?? null,
+    }));
+  }
+
+  let sql = `
+    SELECT a.id, a.title as name, a.finding_kind as kind, a.body as summary,
+           a.severity, a.metric, a.file_path, a.line_start, a.line_end,
+           bm25(analysis_fts, 10.0, 5.0, 3.0) as score
+    FROM analysis_fts
+    JOIN analysis a ON a.id = analysis_fts.rowid
+    WHERE analysis_fts MATCH ?
+  `;
+  const params: unknown[] = [query];
+
+  if (kindFilter) {
+    sql += " AND a.finding_kind = ?";
+    params.push(kindFilter);
+  }
+
+  sql += " ORDER BY CASE a.severity WHEN 'high' THEN 1 WHEN 'warn' THEN 2 WHEN 'info' THEN 3 ELSE 4 END, score LIMIT ?";
+  params.push(limit);
+
+  const rows = db.prepare(sql).all(...params) as any[];
+  return rows.map((r) => ({
+    ...r,
+    source: "analysis" as const,
+    finding_kind: r.kind as string,
+    file_path: r.file_path ?? "",
+    line_start: r.line_start ?? 0,
+    line_end: r.line_end ?? 0,
+    severity: r.severity ?? null,
+    metric: r.metric ?? null,
   }));
 }
 

@@ -78,6 +78,15 @@ describe('index.ts contract', () => {
     expect(noteParams.properties).toHaveProperty('title');
     expect(noteParams.properties).toHaveProperty('body');
 
+    // Check v1.4 tools
+    const findingTool = stub.tools.find(t => t.name === 'codewalker_finding');
+    expect(findingTool).toBeDefined();
+    expect(findingTool!.description).toContain('finding');
+    const findingParams = (findingTool!.parameters as any);
+    expect(findingParams.properties).toHaveProperty('kind');
+    expect(findingParams.properties).toHaveProperty('title');
+    expect(findingParams.properties).toHaveProperty('body');
+
     // Check tool has a source parameter
     const toolParams = (queryTool!.parameters as any);
     expect(toolParams.properties).toHaveProperty('source');
@@ -172,5 +181,27 @@ describe('index.ts contract', () => {
     expect(cmd.description).toContain('enrich');
     expect(cmd.description).toContain('glossary');
     expect(cmd.description).toContain('decisions');
+  });
+
+  it('command description includes v1.4 subcommands (analyze, review, findings, conventions)', async () => {
+    const mod = await import('./index.ts');
+    const stub = createPiStub();
+    mod.default(stub.api as any);
+
+    const cmd = stub.commands.find(c => c.name === 'codewalker')!;
+    expect(cmd.description).toContain('analyze');
+    expect(cmd.description).toContain('review');
+    expect(cmd.description).toContain('findings');
+    expect(cmd.description).toContain('conventions');
+  });
+
+  it('codewalker_note tool accepts type="convention"', async () => {
+    const mod = await import('./index.ts');
+    const stub = createPiStub();
+    mod.default(stub.api as any);
+
+    const noteTool = stub.tools.find(t => t.name === 'codewalker_note')!;
+    const noteParams = (noteTool!.parameters as any);
+    expect(noteParams.properties.type.description).toContain('convention');
   });
 });

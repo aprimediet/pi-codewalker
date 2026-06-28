@@ -166,6 +166,103 @@ describe('formatCompact with note rows', () => {
   });
 });
 
+describe('formatCompact with analysis rows', () => {
+  it('renders a coverage finding row with [coverage] prefix and severity', () => {
+    const rows: QueryResultRow[] = [{
+      id: 1, name: 'Low coverage: src/auth/token.ts', kind: 'coverage',
+      file_path: 'src/auth/token.ts', line_start: 0, line_end: 0,
+      signature: '', summary: 'Token path is under-tested.',
+      score: 0.5, source: 'analysis', finding_kind: 'coverage',
+      severity: 'warn', metric: '38% (24/63 lines)',
+    }];
+    const result = formatCompact(rows, null);
+    expect(result).toContain('Low coverage: src/auth/token.ts');
+    expect(result).toContain('[coverage]');
+    expect(result).toContain('warn');
+    expect(result).toContain('38%');
+    expect(result).toContain('token.ts');
+  });
+
+  it('renders a debt finding row with [debt] prefix', () => {
+    const rows: QueryResultRow[] = [{
+      id: 1, name: 'TODO: fix this', kind: 'debt',
+      file_path: 'src/a.ts', line_start: 5, line_end: 5,
+      signature: '', summary: 'Need to handle edge case',
+      score: 0.5, source: 'analysis', finding_kind: 'debt',
+      severity: 'info', metric: 'TODO',
+    }];
+    const result = formatCompact(rows, null);
+    expect(result).toContain('[debt]');
+    expect(result).toContain('TODO: fix this');
+    expect(result).toContain('info');
+  });
+
+  it('renders a practice finding row with [practice] prefix', () => {
+    const rows: QueryResultRow[] = [{
+      id: 1, name: 'Missing error handling', kind: 'practice',
+      file_path: 'src/api/route.ts', line_start: 15, line_end: 15,
+      signature: '', summary: 'No error handling in this function.',
+      score: 0.5, source: 'analysis', finding_kind: 'practice',
+      severity: 'high', metric: '',
+    }];
+    const result = formatCompact(rows, null);
+    expect(result).toContain('[practice]');
+    expect(result).toContain('high');
+  });
+
+  it('renders mixed code + analysis rows', () => {
+    const codeRow: QueryResultRow = {
+      id: 1, name: 'myFunc', kind: 'function',
+      file_path: 'src/util/helper.ts', line_start: 10, line_end: 20,
+      signature: '', summary: 'Does something', score: 0.5,
+    };
+    const analysisRow: QueryResultRow = {
+      id: 2, name: 'Low coverage', kind: 'coverage',
+      file_path: 'src/util/helper.ts', line_start: 0, line_end: 0,
+      signature: '', summary: 'Low coverage.',
+      score: 0.3, source: 'analysis', finding_kind: 'coverage',
+      severity: 'warn', metric: '30%',
+    };
+    const result = formatCompact([codeRow, analysisRow], null);
+    expect(result).toContain('helper.ts:10-20');
+    expect(result).toContain('[coverage]');
+    expect(result.split('\n')).toHaveLength(2);
+  });
+
+  it('renders mixed code + lib + note + analysis rows', () => {
+    const codeRow: QueryResultRow = {
+      id: 1, name: 'myFunc', kind: 'function',
+      file_path: 'src/util/helper.ts', line_start: 10, line_end: 20,
+      signature: '', summary: 'Does something', score: 0.5,
+    };
+    const libRow: QueryResultRow = {
+      id: 100, name: 'createMiddleware', kind: 'function',
+      file_path: 'hono/dist/helper.d.ts', line_start: 0, line_end: 0,
+      signature: '', summary: 'Define a typed middleware handler.',
+      score: 0.3, source: 'lib', lib: 'hono', version: '4.6.3',
+    };
+    const noteRow: QueryResultRow = {
+      id: 1, name: 'Retry Key', kind: 'glossary',
+      file_path: '', line_start: 0, line_end: 0,
+      signature: '', summary: 'Key for idempotent retries.',
+      score: 0.5, source: 'note', note_kind: 'glossary', tags: '',
+    };
+    const analysisRow: QueryResultRow = {
+      id: 2, name: 'Low coverage', kind: 'coverage',
+      file_path: 'src/util/helper.ts', line_start: 0, line_end: 0,
+      signature: '', summary: 'Low coverage.',
+      score: 0.3, source: 'analysis', finding_kind: 'coverage',
+      severity: 'warn', metric: '30%',
+    };
+
+    const result = formatCompact([codeRow, libRow, noteRow, analysisRow], null);
+    expect(result).toContain('[coverage]');
+    expect(result).toContain('[hono@4.6.3]');
+    expect(result).toContain('[glossary]');
+    expect(result.split('\n')).toHaveLength(4);
+  });
+});
+
 describe('formatCardBody', () => {
   it('returns the card body text', () => {
     const body = '# myFunc\n\nDoes something.\n';

@@ -1,5 +1,90 @@
 # Changelog
 
+## [1.4.0] — 2026-06-28
+
+### Added
+
+- **Analysis layer (Tier 4)** — mechanical coverage + debt scanning + agent-driven
+  best-practice review. Queryable analysis findings alongside code symbols, library
+  APIs, glossary terms, and decision notes.
+
+- **`analysis` table + `analysis_fts`** — new DB tables (v1.4 schema, user_version 4)
+  with `analysis_ai`/`_ad`/`_au` triggers mirroring the existing `notes_*` trio.
+  FTS sync is trigger-only.
+
+- **Coverage parser** (`src/analyze/coverage.ts`) — pure function that parses
+  `coverage/lcov.info` and `coverage-final.json` artifacts. Never runs a coverage
+  tool. Severity banding: `<50%` → high, `50-80%` → warn, `>=80%` → info.
+
+- **Debt scanner** (`src/analyze/debt.ts`) — pure function that scans source
+  files for `TODO`/`FIXME`/`HACK`/`XXX` markers, `@ts-ignore`/`@ts-nocheck` usage,
+  oversized files (`>400` lines), and long functions (`>120` lines via existing
+  symbol spans). Groups findings by marker type via `summarizeDebt()`.
+
+- **Analysis cards** (`src/analyze/cards.ts`) — `renderAnalysisCard()` /
+  `parseAnalysisCard()` for coverage, debt, and practice finding cards under
+  `entries/analysis/<kind>/<slug>.md`.
+
+- **Analysis orchestrator** (`src/analyze/analyzer.ts`) — `runAnalyze()` walks the
+  project tree, parses coverage files, scans debt, writes cards, and upserts DB rows
+  idempotently. `rebuildAnalysisDbFromCards()` reconstructs the DB from cards alone.
+
+- **Review helpers** (`src/analyze/review.ts`) — `validateReviewPath()`,
+  `checkReviewCap()` (default 25 files), `selectFilesForReview()`,
+  `formatReviewWorklist()` that tells the agent to ground findings in
+  conventions/decisions. Mirrors the enrich.ts guardrail pattern exactly.
+
+- **`codewalker_finding` tool** — agent-callable: writes a coverage, debt, or
+  practice finding (with severity, metric, file location, and body). Persists as
+  a card under `entries/analysis/<kind>/` and an `analysis` DB row.
+
+- **Convention notes** — `NoteKind` extended to `'convention'`;
+  `codewalker_note type=convention` writes a convention card under
+  `entries/conventions/`. Searched via `/codewalker conventions [query]`.
+
+- **`/codewalker analyze [path]`** — mechanical analysis: reads coverage artifacts
+  if present, scans debt markers. Reports counts. Never runs a coverage tool.
+
+- **`/codewalker review <path>`** — lazy, scoped, capped agent-driven best-practice
+  review. Refuses bare (no path) and over-cap selections.
+
+- **`/codewalker findings [query]`** — search analysis findings with optional
+  `--kind=coverage|debt|practice` filter.
+
+- **`/codewalker conventions [query]`** — search coding conventions.
+
+- **Unified query with analysis** — `codewalker_query` and `runQuery` now accept
+  `source='analysis'`. `source='all'` interleaves code + lib + note + analysis
+  rows ranked by bm25.
+
+- **Finding-row formatting** — `formatCompact` renders analysis rows with
+  `[coverage]`/`[debt]`/`[practice]` prefix + severity, one line per hit.
+
+- **`ProjectPaths.analysisDir` / `ProjectPaths.conventionsDir`** — new path
+  fields; `ensureProject` creates both directories.
+
+- **Analysis FTS rebuilding** — `rebuildFtsIndexes()` now includes
+  `analysis_fts` alongside symbols, lib_symbols, and notes FTS indexes.
+
+- **`rebuildNotesDbFromCards()`** — now also processes convention cards.
+
+- **Skill + prompt updates** — SKILL.md teaches analyze-for-health-snapshot,
+  capture-conventions-first, review-against-conventions, and report-don't-gate.
+  Prompt updated with analyze/review workflow.
+- **295 automated tests** across 25 test files (5 new: analyze/{coverage,debt,
+  cards,analyzer,review}; 9 extended).
+
+### Changed
+
+- `bootstrapDb()` user_version 3 → 4 (analysis schema upgrade).
+- `NoteKind` type now includes `'convention'`.
+- `QueryResultRow.source` now includes `'analysis'`.
+- `parseNoteCard()` accepts `'convention'` note kind.
+- `runQuery()` and `codewalker_query` now support `source='analysis'`.
+- `formatCompact()` renders `[coverage]`/`[debt]`/`[practice]` finding rows.
+- `ProjectPaths` gains `analysisDir` and `conventionsDir` fields.
+- `package.json` version 1.3.0 → 1.4.0.
+
 ## [1.3.0] — 2026-06-28
 
 ### Added

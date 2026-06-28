@@ -65,7 +65,7 @@ export interface CardHead {
 }
 
 /** Note kind discriminator for bridge cards. */
-export type NoteKind = "glossary" | "decision";
+export type NoteKind = "glossary" | "decision" | "convention";
 
 /** A glossary/decision note (bridge card) for conceptual knowledge. */
 export interface Note {
@@ -75,6 +75,31 @@ export interface Note {
   tags: string;
   related: string;
   card_path: string;
+}
+
+/** Analysis finding kind discriminator. */
+export type FindingKind = "coverage" | "debt" | "practice";
+
+/** A single analysis finding (coverage gap, technical debt, or best-practice finding). */
+export interface Finding {
+  finding_kind: FindingKind;
+  title: string;
+  severity?: "info" | "warn" | "high";
+  file_path?: string;
+  line_start?: number;
+  line_end?: number;
+  metric?: string;
+  body?: string;
+  related?: string;
+  card_path?: string;
+}
+
+/** Per-file coverage data from lcov or coverage-final.json. */
+export interface FileCoverage {
+  file: string;
+  lines_total: number;
+  lines_covered: number;
+  pct: number;
 }
 
 /** A single row returned from a query. */
@@ -88,8 +113,11 @@ export interface QueryResultRow {
   summary: string;
   score: number;
   id: number;
-  /** Origin fields — code rows omit these; lib / note rows set them. */
-  source?: "code" | "lib" | "note";
+  /** Origin fields — code rows omit these; lib / note / analysis rows set them. */
+  source?: "code" | "lib" | "note" | "analysis";
+  finding_kind?: FindingKind;
+  severity?: string;
+  metric?: string;
   lib?: string;
   version?: string;
   /** Note-specific fields — only for source === "note" rows. */

@@ -43,14 +43,28 @@ Parameters:
 
 ### `codewalker_note` — Save domain knowledge
 
-Write a glossary term or design decision note. Persists as a markdown card + FTS index
-so future queries find it.
+Write a glossary term, design decision, or coding convention. Persists as a markdown
+card + FTS index so future queries find it.
 
 Parameters:
-- `type` — `glossary` | `decision`
-- `title` — glossary term or decision title
-- `body` — definition or rationale
+- `type` — `glossary` | `decision` | `convention`
+- `title` — glossary term, decision title, or convention name
+- `body` — definition, rationale, or convention description
 - `tags` — optional comma-separated tags
+- `related` — optional comma-separated symbol names or `file:line` refs
+
+### `codewalker_finding` — Write an analysis finding
+
+Write a coverage, debt, or best-practice finding. Persists as a markdown card under
+`entries/analysis/<kind>/` + FTS index. Called by the agent during a review pass.
+
+Parameters:
+- `kind` — `coverage` | `debt` | `practice`
+- `title` — short finding label
+- `file` — optional file or `file:line` the finding is about
+- `severity` — `info` | `warn` | `high` (default `info`)
+- `body` — finding detail + why it matters, grounded in conventions/decisions
+- `metric` — optional metric string, e.g. `'42%'`, `'fn length 180'`
 - `related` — optional comma-separated symbol names or `file:line` refs
 
 ---
@@ -63,6 +77,10 @@ Parameters:
 | `/codewalker sync` | Git-anchored incremental update (fast) |
 | `/codewalker query <text>` | Search code symbols by name or keyword |
 | `/codewalker enrich <path> [--max=N]` | List unenriched symbols under `path` for annotation |
+| `/codewalker analyze [path]` | Mechanical coverage + debt analysis (reads lcov.info if present) |
+| `/codewalker review <path> [--max=N]` | Agent-driven best-practice review against conventions (capped 25 files) |
+| `/codewalker findings [query] [--kind=KIND]` | Search analysis findings |
+| `/codewalker conventions [query]` | Search coding conventions |
 | `/codewalker glossary [query]` | Search glossary terms |
 | `/codewalker decisions [query]` | Search decision notes |
 | `/codewalker libs [--dev]` | Index all direct npm dependencies (--dev includes devDeps) |
@@ -103,7 +121,33 @@ codewalker_note(type="decision", title="why X", body="rationale")
 ```
 These become searchable via `codewalker_query` with `source='notes'` or `source='all'`.
 
-### 6. Exploring library APIs
+### 6. Capturing coding conventions
+When you learn a project-specific coding convention, record it so reviews can measure
+against it:
+```
+codewalker_note(type="convention", title="Use functional components",
+  body="All React components must be pure functions, not classes.")
+```
+Then search them with `/codewalker conventions [query]`.
+
+### 7. Running a health snapshot
+```
+/codewalker analyze
+```
+This parses `coverage/lcov.info` (if present) and scans source files for
+TODO/FIXME/HACK markers, `@ts-ignore`, oversized files, and long functions.
+Results are queryable via `/codewalker findings [query]` or
+`codewalker_query source='analysis'`.
+
+### 8. Reviewing a subsystem against conventions
+```
+/codewalker review src/auth
+```
+This selects files under `src/auth` (capped at 25) and produces a worklist for the
+agent to review each file against the project's conventions and decisions. The agent
+calls `codewalker_finding` to write findings back.
+
+### 9. Exploring library APIs
 ```
 /codewalker libs            # index dependencies
 /codewalker lib express     # search express exports
@@ -130,4 +174,7 @@ knowledge your future self will thank you for.
 - **Cards as source of truth**: every symbol and note is stored as a markdown card file.
   The DB is rebuilt from cards on `scan` — cards are the durable artifact
 - **Source filter**: use `source='libs'` to search only library APIs, `source='notes'`
-  for glossary/decisions, `source='all'` for everything at once
+  for glossary/decisions, `source='analysis'` for findings, `source='all'` for everything
+  at once
+- **Report, don't gate**: analysis findings are advisory cards and FTS rows, never a CI
+  gate or build failure

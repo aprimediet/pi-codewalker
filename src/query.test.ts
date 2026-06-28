@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { openDb, upsertSymbol, setMeta, getMeta, upsertLibSymbol, upsertNote, searchLibSymbols } from './db.ts';
+import { openDb, upsertSymbol, setMeta, getMeta, upsertLibSymbol, upsertNote, upsertFinding, searchLibSymbols } from './db.ts';
 import { runQuery } from './query.ts';
 
 describe('query.ts', () => {
@@ -240,6 +240,81 @@ describe('query.ts', () => {
     expect(result.rows.length).toBeGreaterThanOrEqual(1);
     const sources = result.rows.map(r => r.source);
     expect(sources).toContain('note');
+  });
+
+  // ── analysis source ────────────────────────────────────────
+  it('source="analysis" returns only findings', () => {
+    const db = openDb(dbPath);
+    upsertFinding(db, {
+      finding_kind: 'debt', title: 'TODO: fix', severity: 'info',
+      file_path: 'src/a.ts', line_start: 1, line_end: 1,
+      metric: 'TODO', body: 'Fix this', related: '', card_path: '',
+    });
+    upsertSymbol(db, {
+      name: 'myFunc', kind: 'function', file_path: 'src/a.ts',
+      line_start: 1, line_end: 1, signature: '', doc: '', summary: '', card_path: '',
+    });
+    db.close();
+
+    const result = runQuery(dbPath, { query: '', source: 'analysis' });
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0]!.source).toBe('analysis');
+    expect(result.rows[0]!.finding_kind).toBe('debt');
+  });
+
+  it('source="all" includes analysis findings interleaved with code, libs, notes', () => {
+    const db = openDb(dbPath);
+    upsertSymbol(db, {
+      name: 'myFunc', kind: 'function', file_path: 'src/a.ts',
+      line_start: 1, line_end: 1, signature: '', doc: '', summary: '', card_path: '',
+    });
+    upsertFinding(db, {
+      finding_kind: 'coverage', title: 'Low coverage: a.ts', severity: 'warn',
+      file_path: 'src/a.ts', line_start: 0, line_end: 0,
+      metric: '50%', body: 'Half covered', related: '', card_path: '',
+    });
+    db.close();
+
+    const result = runQuery(dbPath, { query: '', source: 'all' });
+    expect(result.rows.length).toBeGreaterThanOrEqual(2);
+    const sources = result.rows.map(r => r.source);
+    expect(sources).toContain('analysis');
+  });
+
+  it('source="analysis" with kind filter narrows by finding_kind', () => {
+    const db = openDb(dbPath);
+    upsertFinding(db, {
+      finding_kind: 'coverage', title: 'Coverage gap', severity: 'warn',
+      file_path: 'src/a.ts', line_start: 0, line_end: 0,
+      metric: '50%', body: '', related: '', card_path: '',
+    });
+    upsertFinding(db, {
+      finding_kind: 'debt', title: 'Debt item', severity: 'high',
+      file_path: 'src/b.ts', line_start: 1, line_end: 1,
+      metric: 'TODO', body: '', related: '', card_path: '',
+    });
+    db.close();
+
+    const result = runQuery(dbPath, { query: '', source: 'analysis', kind: 'coverage' });
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0]!.name).toBe('Coverage gap');
+  });
+
+  it('source="all" with analysis data respects limit', () => {
+    const db = openDb(dbPath);
+    upsertSymbol(db, {
+      name: 'myFunc', kind: 'function', file_path: 'src/a.ts',
+      line_start: 1, line_end: 1, signature: '', doc: '', summary: '', card_path: '',
+    });
+    upsertFinding(db, {
+      finding_kind: 'debt', title: 'Debt', severity: 'info',
+      file_path: 'src/a.ts', line_start: 1, line_end: 1,
+      metric: 'TODO', body: '', related: '', card_path: '',
+    });
+    db.close();
+
+    const result = runQuery(dbPath, { query: '', source: 'all', limit: 1 });
+    expect(result.rows).toHaveLength(1);
   });
 
 });
