@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.1] — 2026-07-02
+
+### Fixed
+
+- **`prompts/codewalker.md` restored** — the system prompt file was accidentally deleted
+  and is now restored to HEAD.
+
 ## [1.4.0] — 2026-06-28
 
 ### Added
